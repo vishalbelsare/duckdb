@@ -27,17 +27,30 @@ public:
 	//! Executes a set of expressions and stores them in the result chunk
 	void Execute(vector<unique_ptr<Expression>> &expressions, DataChunk &result);
 	void Execute(vector<Expression *> &expressions, DataChunk &result);
-	//! Executes a set of column expresions and merges them using the logical
-	//! AND operator
+	//! Executes a column expression and merges the selection vector
 	void Merge(vector<std::unique_ptr<Expression>> &expressions);
 	//! Execute a single abstract expression and store the result in result
 	void ExecuteExpression(Expression &expr, Vector &result);
 	//! Evaluate a scalar expression and fold it into a single value
 	static Value EvaluateScalar(Expression &expr);
+	//! Calculates a new expression execution order
+	void GetNewPermutation();
 
 	//! The data chunk of the current physical operator, used to resolve
 	//! column references and determines the output cardinality
 	DataChunk *chunk;
+
+	//! The current permutation to be used in the execution phase
+	std::vector<index_t> current_perm;
+	//! Runtimes of each expression measured in the last exploration phase
+	std::vector<double> expr_runtimes;
+	//! Selectivity of each expression measured in the last exploration phase
+	std::vector<index_t> expr_selectivity;
+
+	//! Used to switch between execution and exploration phase
+	bool exploration_phase;
+	//! Count the iterations of the execution phase
+	index_t count;
 
 protected:
 	void Execute(Expression &expr, Vector &result);

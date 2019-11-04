@@ -11,7 +11,6 @@ add_subdirectory(helpers)
 add_subdirectory(monetdb)
 add_subdirectory(sql)
 add_subdirectory(optimizer)
-add_subdirectory(predicate_optimization)
 
 if(NOT WIN32)
   add_subdirectory(sqlserver)

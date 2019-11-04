@@ -9,6 +9,7 @@
 #pragma once
 
 #include "execution/physical_operator.hpp"
+#include "execution/expression_executor.hpp"
 
 namespace duckdb {
 
@@ -25,7 +26,15 @@ public:
 
 public:
 	void GetChunkInternal(ClientContext &context, DataChunk &chunk, PhysicalOperatorState *state) override;
-
 	string ExtraRenderInformation() const override;
+	unique_ptr<PhysicalOperatorState> GetOperatorState() override;
+};
+
+class PhysicalFilterOperatorState : public PhysicalOperatorState {
+public:
+	PhysicalFilterOperatorState(PhysicalOperator *child)
+	    : PhysicalOperatorState(child), expr_executor(ExpressionExecutor()) {
+	}
+	ExpressionExecutor expr_executor;
 };
 } // namespace duckdb

@@ -3,16 +3,46 @@
 #include "common/types/static_vector.hpp"
 #include "common/vector_operations/vector_operations.hpp"
 
+#include <chrono>
+
 using namespace duckdb;
 using namespace std;
 
 ExpressionExecutor::ExpressionExecutor() : chunk(nullptr) {
+	count = 0;
+	exploration_phase = true;
 }
 
 ExpressionExecutor::ExpressionExecutor(DataChunk *child_chunk) : chunk(child_chunk) {
 }
 
 ExpressionExecutor::ExpressionExecutor(DataChunk &child_chunk) : chunk(&child_chunk) {
+}
+
+struct AdaptiveScore {
+	index_t idx;
+	double score;
+
+	bool operator==(const AdaptiveScore &p) const {
+		return idx == p.idx && score == p.score;
+	}
+	bool operator<(const AdaptiveScore &p) const {
+		return score < p.score || (score == p.score && idx < p.score);
+	}
+} ;
+
+void ExpressionExecutor::GetNewPermutation() {
+	vector<AdaptiveScore> scores;
+	current_perm.clear();
+	//calculate score
+	for (index_t i = 0; i < expr_selectivity.size(); i++) {
+		scores.push_back({i, (double)expr_selectivity[i] * expr_runtimes[i]});
+	}
+	//sort by score and create permutation based on sort result
+	sort(scores.begin(), scores.end());
+	for (index_t i = 0; i < scores.size(); i++) {
+		current_perm.push_back(scores[i].idx);
+	}
 }
 
 void ExpressionExecutor::Execute(vector<unique_ptr<Expression>> &expressions, DataChunk &result) {
@@ -37,27 +67,77 @@ void ExpressionExecutor::Execute(vector<Expression *> &expressions, DataChunk &r
 	result.Verify();
 }
 
-void ExpressionExecutor::Merge(std::vector<std::unique_ptr<Expression>> &expressions) {
+void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 	assert(expressions.size() > 0);
-	//evaluate all expressions
-	for (index_t i = expressions.size(); i > 0; i--) {
-		//return if no more true rows
-		if (chunk->size() != 0) {
-			//evaluate current expression
-			Vector intermediate;
-			Execute(*expressions[i - 1], intermediate);
-			assert(intermediate.type == TypeId::BOOLEAN);
-			//if constant and false/null, set count == 0 to fetch the next chunk
-			if (intermediate.IsConstant()) {
-				if (!intermediate.data[0] || intermediate.nullmask[0]) {
-					chunk->data[0].count = 0;
-					break;
-				}
-			} else {
-				chunk->SetSelectionVector(intermediate);
+
+	if (expressions.size() == 1) {
+		Vector intermediate;
+		Execute(*expressions[0], intermediate);
+		assert(intermediate.type == TypeId::BOOLEAN);
+		//if constant and false/null, set count == 0 to fetch the next chunk
+		if (intermediate.IsConstant()) {
+			if (!intermediate.data[0] || intermediate.nullmask[0]) {
+				chunk->data[0].count = 0;
 			}
 		} else {
-			break;
+			chunk->SetSelectionVector(intermediate);
+		}
+	} else {
+		index_t start_idx = 0;
+		index_t end_idx = current_perm.size();
+		chrono::time_point<chrono::high_resolution_clock> start_time;
+		chrono::time_point<chrono::high_resolution_clock> end_time;
+
+		if (exploration_phase) {
+			start_idx = count;
+			end_idx = count + expressions.size();
+		}
+
+		//evaluate all expressions
+		for (index_t i = start_idx; i < end_idx; i++) {
+			//return if no more true rows
+			if (chunk->size() != 0) {
+				//evaluate current expression
+				Vector intermediate;
+
+				if (exploration_phase) {
+					if (i == start_idx) {
+						start_time = chrono::high_resolution_clock::now();
+						Execute(*expressions[i % expressions.size()], intermediate);
+						end_time = chrono::high_resolution_clock::now();
+						expr_runtimes.push_back(chrono::duration_cast<chrono::duration<double>>(end_time - start_time).count());
+					} else {
+						Execute(*expressions[i % expressions.size()], intermediate);
+					}
+				} else {
+					Execute(*expressions[current_perm[i]], intermediate);
+				}
+
+				assert(intermediate.type == TypeId::BOOLEAN);
+				//if constant and false/null, set count == 0 to fetch the next chunk
+				if (intermediate.IsConstant()) {
+					if (!intermediate.data[0] || intermediate.nullmask[0]) {
+						chunk->data[0].count = 0;
+						if (exploration_phase) {
+							if (i == start_idx) {
+								expr_selectivity.push_back(0);
+							}
+						}
+						break;
+					}
+				} else {
+					chunk->SetSelectionVector(intermediate);
+				}
+
+				if (exploration_phase) {
+					if (i == start_idx) {
+						expr_selectivity.push_back(chunk->data[0].count);
+					}
+				}
+
+			} else {
+				break;
+			}
 		}
 	}
 }
