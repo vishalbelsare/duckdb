@@ -11,6 +11,8 @@ using namespace std;
 ExpressionExecutor::ExpressionExecutor() : chunk(nullptr) {
 	count = 0;
 	exploration_phase = true;
+	calls_to_merge = 0;
+	calls_to_get_chunk = 0;
 }
 
 ExpressionExecutor::ExpressionExecutor(DataChunk *child_chunk) : chunk(child_chunk) {
@@ -19,30 +21,13 @@ ExpressionExecutor::ExpressionExecutor(DataChunk *child_chunk) : chunk(child_chu
 ExpressionExecutor::ExpressionExecutor(DataChunk &child_chunk) : chunk(&child_chunk) {
 }
 
-struct AdaptiveScore {
-	index_t idx;
-	double score;
-
-	bool operator==(const AdaptiveScore &p) const {
-		return idx == p.idx && score == p.score;
-	}
-	bool operator<(const AdaptiveScore &p) const {
-		return score < p.score || (score == p.score && idx < p.score);
-	}
-} ;
-
 void ExpressionExecutor::GetNewPermutation() {
-	vector<AdaptiveScore> scores;
+	permutations.push_back(current_perm);
 	current_perm.clear();
-	//calculate score
-	for (index_t i = 0; i < expr_selectivity.size(); i++) {
-		scores.push_back({i, (double)expr_selectivity[i] * expr_runtimes[i]});
-	}
-	//sort by score and create permutation based on sort result
-	sort(scores.begin(), scores.end());
-	for (index_t i = 0; i < scores.size(); i++) {
-		current_perm.push_back(scores[i].idx);
-	}
+	while (!scores.empty()) {
+		current_perm.push_back(scores.top().idx);
+		scores.pop();
+    }
 }
 
 void ExpressionExecutor::Execute(vector<unique_ptr<Expression>> &expressions, DataChunk &result) {
@@ -70,6 +55,7 @@ void ExpressionExecutor::Execute(vector<Expression *> &expressions, DataChunk &r
 void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 	assert(expressions.size() > 0);
 
+	//if there is only one expression, adaptive statistics are not needed
 	if (expressions.size() == 1) {
 		Vector intermediate;
 		Execute(*expressions[0], intermediate);
@@ -83,6 +69,7 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 			chunk->SetSelectionVector(intermediate);
 		}
 	} else {
+		//more than one expression, apply adaptive algorithm
 		index_t start_idx = 0;
 		index_t end_idx = current_perm.size();
 		chrono::time_point<chrono::high_resolution_clock> start_time;
@@ -97,19 +84,24 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 		for (index_t i = start_idx; i < end_idx; i++) {
 			//return if no more true rows
 			if (chunk->size() != 0) {
-				//evaluate current expression
 				Vector intermediate;
 
+				//evaluation of current expression
 				if (exploration_phase) {
+					//update metrics
+					selectivity_count[i % expressions.size()] += chunk->data[0].count;
+					execution_count[i % expressions.size()]++;
 					if (i == start_idx) {
 						start_time = chrono::high_resolution_clock::now();
 						Execute(*expressions[i % expressions.size()], intermediate);
 						end_time = chrono::high_resolution_clock::now();
-						expr_runtimes.push_back(chrono::duration_cast<chrono::duration<double>>(end_time - start_time).count());
 					} else {
 						Execute(*expressions[i % expressions.size()], intermediate);
 					}
 				} else {
+					//update metrics
+					selectivity_count[current_perm[i]] += chunk->data[0].count;
+					execution_count[current_perm[i]]++;
 					Execute(*expressions[current_perm[i]], intermediate);
 				}
 
@@ -118,23 +110,18 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 				if (intermediate.IsConstant()) {
 					if (!intermediate.data[0] || intermediate.nullmask[0]) {
 						chunk->data[0].count = 0;
-						if (exploration_phase) {
-							if (i == start_idx) {
-								expr_selectivity.push_back(0);
-							}
+						if (exploration_phase && i == start_idx) {
+							scores.push({i % expressions.size(), 0.0});
 						}
 						break;
 					}
 				} else {
 					chunk->SetSelectionVector(intermediate);
-				}
-
-				if (exploration_phase) {
-					if (i == start_idx) {
-						expr_selectivity.push_back(chunk->data[0].count);
+					if (exploration_phase && i == start_idx) {
+						auto runtime = chrono::duration_cast<chrono::duration<double>>(end_time - start_time).count();
+						scores.push({i % expressions.size(), (double)chunk->size() * runtime});
 					}
 				}
-
 			} else {
 				break;
 			}
