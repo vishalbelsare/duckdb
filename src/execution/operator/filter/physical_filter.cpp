@@ -19,30 +19,10 @@ void PhysicalFilter::GetChunkInternal(ClientContext &context, DataChunk &chunk, 
 
 		assert(expressions.size() > 0);
 
-		//required for metrics
 		if (expressions.size() != state->expr_executor.selectivity_count.size()) {
+			//required for metrics
 			state->expr_executor.selectivity_count.resize(expressions.size());
 			state->expr_executor.execution_count.resize(expressions.size());
-		}
-
-		if (expressions.size() > 1) {
-			// switch between execution and exploration phase
-			if (!state->expr_executor.exploration_phase) {
-				// execution phase
-				if (state->expr_executor.count == 100) {
-					//end
-					state->expr_executor.exploration_phase = true;
-					state->expr_executor.count = 0;
-				}
-			} else {
-				// exploration phase
-				if (state->expr_executor.count == expressions.size()) {
-					// end
-					state->expr_executor.exploration_phase = false;
-					state->expr_executor.count = 0;
-					state->expr_executor.GetNewPermutation();
-				}
-			}
 		}
 
 		state->expr_executor.chunk = &(state->child_chunk);
@@ -63,8 +43,6 @@ void PhysicalFilter::GetChunkInternal(ClientContext &context, DataChunk &chunk, 
 				chunk.data[i].sel_vector = state->child_chunk.sel_vector;
 			}
 		}
-
-		state->expr_executor.count++;
 
 	} while (chunk.size() == 0);
 }

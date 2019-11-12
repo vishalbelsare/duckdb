@@ -22,12 +22,12 @@ ExpressionExecutor::ExpressionExecutor(DataChunk &child_chunk) : chunk(&child_ch
 }
 
 void ExpressionExecutor::GetNewPermutation() {
-	permutations.push_back(current_perm);
 	current_perm.clear();
 	while (!scores.empty()) {
 		current_perm.push_back(scores.top().idx);
 		scores.pop();
     }
+	permutations.push_back(current_perm);
 }
 
 void ExpressionExecutor::Execute(vector<unique_ptr<Expression>> &expressions, DataChunk &result) {
@@ -72,6 +72,7 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 		//more than one expression, apply adaptive algorithm
 		index_t start_idx = 0;
 		index_t end_idx = current_perm.size();
+		index_t selectivity = 0;
 		chrono::time_point<chrono::high_resolution_clock> start_time;
 		chrono::time_point<chrono::high_resolution_clock> end_time;
 
@@ -91,6 +92,7 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 					//update metrics
 					selectivity_count[i % expressions.size()] += chunk->data[0].count;
 					execution_count[i % expressions.size()]++;
+					selectivity += chunk->data[0].count;
 					if (i == start_idx) {
 						start_time = chrono::high_resolution_clock::now();
 						Execute(*expressions[i % expressions.size()], intermediate);
@@ -102,6 +104,7 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 					//update metrics
 					selectivity_count[current_perm[i]] += chunk->data[0].count;
 					execution_count[current_perm[i]]++;
+					selectivity += chunk->data[0].count;
 					Execute(*expressions[current_perm[i]], intermediate);
 				}
 
@@ -124,6 +127,31 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 				}
 			} else {
 				break;
+			}
+		}
+
+		if (exploration_phase) {
+			if (count == expressions.size() - 1) {
+				GetNewPermutation();
+				exploration_phase = false;
+				count = 0;
+			} else {
+				count++;
+			}
+		} else {
+			if (count >= expressions.size() * 4) {
+				auto mean = score / count;
+				if ((abs((double)selectivity - mean) / mean) > 0.05) {
+					exploration_phase = true;
+					score = 0.0;
+					count = 0;
+				} else {
+					score += (double)selectivity;
+					count++;
+				}
+			} else {
+				score += (double)selectivity;
+				count++;
 			}
 		}
 	}

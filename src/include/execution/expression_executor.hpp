@@ -63,6 +63,8 @@ class ExpressionExecutor {
 		bool exploration_phase;
 		//! Count the iterations of the execution phase
 		index_t count;
+		//! Sum of the selectivities of the current execution phase
+		double score;
 
 		//! Stores the number of values that where evaluated for each expression
 		std::vector<index_t> selectivity_count;
