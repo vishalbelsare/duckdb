@@ -13,6 +13,8 @@ ExpressionExecutor::ExpressionExecutor() : chunk(nullptr) {
 	exploration_phase = true;
 	calls_to_merge = 0;
 	calls_to_get_chunk = 0;
+	score = 0.0;
+	threshold = 0.05;
 }
 
 ExpressionExecutor::ExpressionExecutor(DataChunk *child_chunk) : chunk(child_chunk) {
@@ -22,12 +24,26 @@ ExpressionExecutor::ExpressionExecutor(DataChunk &child_chunk) : chunk(&child_ch
 }
 
 void ExpressionExecutor::GetNewPermutation() {
+	int16_t old_perm = permutations.size() - 1;
 	current_perm.clear();
 	while (!scores.empty()) {
 		current_perm.push_back(scores.top().idx);
 		scores.pop();
     }
 	permutations.push_back(current_perm);
+	//adapt threshold if permutation did not change
+	if (old_perm >= 0) {
+		bool adapt_threshold = true;
+		for (index_t i = 0; i < permutations[old_perm].size(); i++) {
+			if ((permutations[old_perm])[i] != (permutations[old_perm + 1])[i]) {
+				adapt_threshold = false;
+				break;
+			}
+		}
+		if (adapt_threshold) {
+			threshold = (threshold + change_percentage) / 2;
+		}
+	}
 }
 
 void ExpressionExecutor::Execute(vector<unique_ptr<Expression>> &expressions, DataChunk &result) {
@@ -135,22 +151,32 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 				GetNewPermutation();
 				exploration_phase = false;
 				count = 0;
+				// get the iteration of the next random exploration phase
+				srand(time(nullptr));
+				random_explore = 200 + rand() / (RAND_MAX / (200));
 			} else {
 				count++;
 			}
 		} else {
-			if (count >= expressions.size() * 4) {
+			auto normed_sel = (double)selectivity / (STANDARD_VECTOR_SIZE * expressions.size());
+			if (count >= expressions.size() * 4 && count < random_explore) {
 				auto mean = score / count;
-				if ((abs((double)selectivity - mean) / mean) > 0.05) {
+				change_percentage = abs(normed_sel - mean) / mean;
+				if (change_percentage > threshold) {
 					exploration_phase = true;
 					score = 0.0;
 					count = 0;
 				} else {
-					score += (double)selectivity;
+					score += normed_sel;
 					count++;
 				}
+			} else if (count == random_explore) {
+				// trigger random exploration phases to detect changes in runtime
+				exploration_phase = true;
+				score = 0.0;
+				count = 0;
 			} else {
-				score += (double)selectivity;
+				score += normed_sel;
 				count++;
 			}
 		}

@@ -3,6 +3,7 @@
 #include "execution/expression_executor.hpp"
 
 #include <fstream>
+#include <iostream>
 
 using namespace duckdb;
 using namespace std;
@@ -60,29 +61,27 @@ unique_ptr<PhysicalOperatorState> PhysicalFilter::GetOperatorState() {
 }
 
 PhysicalFilterOperatorState::~PhysicalFilterOperatorState() {
-	//NOTE: if enabled, a metrics.txt file will be created
+	//NOTE: if enabled, metrics will be printed to std::cout
 	/*
-	ofstream metrics("metrics.txt");
-	metrics << "Calls to GetChunk: " << expr_executor.calls_to_get_chunk << endl;
-	metrics << "Calls to Merge: " << expr_executor.calls_to_merge << endl;
-	metrics << "Execution count:" << endl;
+	std::cout << "Calls to GetChunk: " << expr_executor.calls_to_get_chunk << endl;
+	std::cout << "Calls to Merge: " << expr_executor.calls_to_merge << endl;
+	std::cout << "Execution count:" << endl;
 	for (const auto& item : expr_executor.execution_count) {
-		metrics << item << endl;
+		std::cout << item << endl;
 	}
-	metrics << "Selectivity count:" << endl;
+	std::cout << "Selectivity count:" << endl;
 	index_t sum = 0;
 	for (const auto& item : expr_executor.selectivity_count) {
-		metrics << item << endl;
+		std::cout << item << endl;
 		sum += item;
 	}
-	metrics << "Sum: " << sum << endl;
-	metrics << "Permutations: " << endl;
+	std::cout << "Sum: " << sum << endl;
+	std::cout << "Permutations: " << endl;
 	for (const auto& item : expr_executor.permutations) {
 		for (const auto& elem : item) {
-			metrics << elem << ", ";
+			std::cout << elem << ", ";
 		}
-		metrics << endl;
+		std::cout << endl;
 	}
-	metrics.close();
 	*/
 }

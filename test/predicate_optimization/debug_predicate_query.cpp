@@ -22,7 +22,7 @@ static void GenerateData() {
     uniform_real_distribution<double> distribution3(0.1, 4.5);
 
     ofstream data("data.csv");
-    for (index_t i = 0; i < STANDARD_VECTOR_SIZE * 400; i++) {
+    for (index_t i = 0; i < STANDARD_VECTOR_SIZE * 1000; i++) {
         
         index_t str1idx = distribution(generator);
         index_t str2idx = distribution(generator);
@@ -67,7 +67,7 @@ TEST_CASE("Debug Filter Predicate 1", "[debug_fpo]") {
 
     REQUIRE_NO_FAIL(con.Query("CREATE TABLE nice_data (index INTEGER, str1 VARCHAR(20), str2 VARCHAR(11), str3 VARCHAR, int1 INTEGER, int2 INTEGER, date1 DATE, date2 DATE, bool1 BOOLEAN, double1 DOUBLE, bigint1 BIGINT);"));
 	//result = con.Query("COPY nice_data FROM 'data.csv';");
-	//REQUIRE(CHECK_COLUMN(result, 0, {STANDARD_VECTOR_SIZE * 600}));
+	//REQUIRE(CHECK_COLUMN(result, 0, {STANDARD_VECTOR_SIZE * 1000}));
 
     REQUIRE_NO_FAIL(con.Query("SELECT * FROM nice_data WHERE str1 IN ('shine', 'sunglasses', 'sunny', 'sunburn') AND int1 BETWEEN 1 AND 5 AND length(str2) != 5 AND date1 < cast('2004-01-01' as date) AND regexp_matches(str3, '.*sh.*') AND date2 IS NULL;"));
 }
@@ -95,7 +95,7 @@ TEST_CASE("Debug Filter Predicate 3", "[debug_fpo]") {
 
     REQUIRE_NO_FAIL(con.Query("CREATE TABLE nice_data (index INTEGER, str1 VARCHAR(20), str2 VARCHAR(11), str3 VARCHAR, int1 INTEGER, int2 INTEGER, date1 DATE, date2 DATE, bool1 BOOLEAN, double1 DOUBLE, bigint1 BIGINT);"));
 	//result = con.Query("COPY nice_data FROM 'data.csv';");
-	//REQUIRE(CHECK_COLUMN(result, 0, {STANDARD_VECTOR_SIZE * 600}));
+	//REQUIRE(CHECK_COLUMN(result, 0, {STANDARD_VECTOR_SIZE * 1000}));
 
     REQUIRE_NO_FAIL(con.Query("SELECT * FROM nice_data t1 WHERE str1 LIKE '%shi%' AND regexp_matches(str1, '.*s.*')	AND str2 = 'xxxxxxx' AND str1 IN ('shine', 'sunglasses', 'sunny', 'sunburn');"));
 }
@@ -109,7 +109,7 @@ TEST_CASE("Debug Filter Predicate 4", "[debug_fpo]") {
 
     REQUIRE_NO_FAIL(con.Query("CREATE TABLE nice_data (index INTEGER, str1 VARCHAR(20), str2 VARCHAR(11), str3 VARCHAR, int1 INTEGER, int2 INTEGER, date1 DATE, date2 DATE, bool1 BOOLEAN, double1 DOUBLE, bigint1 BIGINT);"));
 	//result = con.Query("COPY nice_data FROM 'data.csv';");
-	//REQUIRE(CHECK_COLUMN(result, 0, {STANDARD_VECTOR_SIZE * 600}));
+	//REQUIRE(CHECK_COLUMN(result, 0, {STANDARD_VECTOR_SIZE * 1000}));
 
     REQUIRE_NO_FAIL(con.Query("SELECT * FROM nice_data t1 WHERE str1 = 'sunshine' AND int1 % 3 == 0;"));
 }

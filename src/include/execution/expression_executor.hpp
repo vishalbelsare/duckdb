@@ -63,8 +63,14 @@ class ExpressionExecutor {
 		bool exploration_phase;
 		//! Count the iterations of the execution phase
 		index_t count;
+		//! A random iteration index to trigger the exploration phase
+		index_t random_explore;
 		//! Sum of the selectivities of the current execution phase
 		double score;
+		//! Adaptive threshold to trigger exploration phase
+		double threshold;
+		//! Last change percentage
+		double change_percentage;
 
 		//! Stores the number of values that where evaluated for each expression
 		std::vector<index_t> selectivity_count;
