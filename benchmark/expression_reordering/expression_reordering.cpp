@@ -76,3 +76,19 @@ string BenchmarkInfo() override {
 	return "Execute Expression Reordering Q3";
 }
 FINISH_BENCHMARK(ExpressionReorderingQ3)
+
+
+DUCKDB_BENCHMARK(ExpressionReorderingQ4, "[expression_reordering]")
+void Load(DuckDBBenchmarkState *state) override {
+	LoadData(state);
+}
+string GetQuery() override {
+	return "SELECT * FROM nice_data t1 WHERE str1 = 'sunshine' AND int1 % 3 == 0;";
+}
+string VerifyResult(QueryResult *result) override {
+	return VerifyQueryResult(result);
+}
+string BenchmarkInfo() override {
+	return "Execute Expression Reordering Q4";
+}
+FINISH_BENCHMARK(ExpressionReorderingQ4)
