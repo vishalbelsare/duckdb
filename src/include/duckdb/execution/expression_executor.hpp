@@ -15,6 +15,7 @@
 #include "duckdb/planner/expression.hpp"
 
 #include <queue>
+#include <set>
 
 namespace duckdb {
 
@@ -35,29 +36,34 @@ class ExpressionExecutor {
 		void ExecuteExpression(Expression &expr, Vector &result);
 		//! Evaluate a scalar expression and fold it into a single value
 		static Value EvaluateScalar(Expression &expr);
-		//! Calculates a new expression execution order
-		void GetNewPermutation();
-
-		struct AdaptiveScore {
-			index_t idx;
-			double score;
-
-			bool operator==(const AdaptiveScore &p) const {
-				return idx == p.idx && score == p.score;
-			}
-			bool operator<(const AdaptiveScore &p) const {
-				return score > p.score || (score == p.score && idx < p.score);
-			}
-		};
 
 		//! The data chunk of the current physical operator, used to resolve
 		//! column references and determines the output cardinality
 		DataChunk *chunk;
 
-		//! The current permutation to be used in the execution phase
-		std::vector<index_t> current_perm;
-		//! Insert the scores of the individual expressions
-		std::priority_queue<AdaptiveScore> scores;
+		struct Permutation {
+			double runtime;
+			index_t selectivity;
+			std::vector<index_t> permutation;
+
+			bool operator==(const Permutation &p) const {
+				return runtime == p.runtime && selectivity == p.selectivity && permutation == p.permutation;
+			}
+			bool operator<(const Permutation &p) const {
+				return runtime > p.runtime || (runtime == p.runtime && selectivity < p.selectivity);
+			}
+		};
+
+		//! All permutation ranks already tested in the exploration phase
+		std::set<index_t> illegal_ranks;
+		//! The default permutation from which all others are created
+		Permutation rank_0_permutation; //TODO: we actually only need a std::vector<index_t> here
+		//! The currently tested permutation
+		Permutation current;
+		//! The currently 'best' permutation
+		Permutation best;
+
+		index_t expr_size_factorial;
 
 		//! Used to switch between execution and exploration phase
 		bool exploration_phase;
@@ -72,6 +78,7 @@ class ExpressionExecutor {
 		//! Last change percentage
 		double change_percentage;
 
+		/* METRICS */
 		//! Stores the number of values that where evaluated for each expression
 		std::vector<index_t> selectivity_count;
 		//! Stores how often each expression was executed

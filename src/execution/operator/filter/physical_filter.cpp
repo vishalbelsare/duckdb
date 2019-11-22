@@ -10,8 +10,10 @@ using namespace std;
 
 void PhysicalFilter::GetChunkInternal(ClientContext &context, DataChunk &chunk, PhysicalOperatorState *state_) {
 	auto state = reinterpret_cast<PhysicalFilterOperatorState *>(state_);
+
 	//update metrics
 	state->expr_executor.calls_to_get_chunk++;
+
 	do {
 		children[0]->GetChunk(context, state->child_chunk, state->child_state.get());
 		if (state->child_chunk.size() == 0) {
@@ -24,11 +26,20 @@ void PhysicalFilter::GetChunkInternal(ClientContext &context, DataChunk &chunk, 
 			//required for metrics
 			state->expr_executor.selectivity_count.resize(expressions.size());
 			state->expr_executor.execution_count.resize(expressions.size());
+
+			//initialize factorial and default permutation
+			state->expr_executor.expr_size_factorial = 1;
+			for (index_t i = 1; i <= expressions.size(); i++) {
+				state->expr_executor.expr_size_factorial *= i;
+				state->expr_executor.rank_0_permutation.permutation.push_back(i - 1);
+			}
 		}
 
-		state->expr_executor.chunk = &(state->child_chunk);
 		//update metrics
 		state->expr_executor.calls_to_merge++;
+
+		//execute expressions
+		state->expr_executor.chunk = &(state->child_chunk);
 		state->expr_executor.Merge(expressions);
 
 		if (state->child_chunk.size() != 0) {

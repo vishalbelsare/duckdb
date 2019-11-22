@@ -15,6 +15,7 @@ ExpressionExecutor::ExpressionExecutor() : chunk(nullptr) {
 	calls_to_get_chunk = 0;
 	score = 0.0;
 	threshold = 0.05;
+	best.runtime = -1.0;
 }
 
 ExpressionExecutor::ExpressionExecutor(DataChunk *child_chunk) : chunk(child_chunk) {
@@ -23,27 +24,48 @@ ExpressionExecutor::ExpressionExecutor(DataChunk *child_chunk) : chunk(child_chu
 ExpressionExecutor::ExpressionExecutor(DataChunk &child_chunk) : chunk(&child_chunk) {
 }
 
-void ExpressionExecutor::GetNewPermutation() {
-	int16_t old_perm = permutations.size() - 1;
-	current_perm.clear();
-	while (!scores.empty()) {
-		current_perm.push_back(scores.top().idx);
-		scores.pop();
-    }
-	permutations.push_back(current_perm);
-	//adapt threshold if permutation did not change
-	if (old_perm >= 0) {
-		bool adapt_threshold = true;
-		for (index_t i = 0; i < permutations[old_perm].size(); i++) {
-			if ((permutations[old_perm])[i] != (permutations[old_perm + 1])[i]) {
-				adapt_threshold = false;
-				break;
-			}
-		}
-		if (adapt_threshold) {
-			threshold = (threshold + change_percentage) / 2;
+void Swap(index_t &x, index_t &y) {
+	index_t tmp = x;
+	x = y;
+	y = tmp;
+}
+
+void GetPermutationByRank(index_t rank, index_t n, vector<index_t> &permutation) {
+    index_t q, r;
+    if (n < 1) {
+		//stop recursive calls to GetPermutationByRank
+		return;
+	}
+    q = rank / n;
+    r = rank % n;
+	//recursively unrank permutation
+    Swap(permutation[r], permutation[n - 1]);
+    GetPermutationByRank(q, n - 1, permutation);
+}
+
+index_t GetRandomDistinctRank(index_t expr_size_factorial, set<index_t> &illegal_ranks) {
+	set<index_t>::iterator it;
+	index_t r;
+	//all permutations are already exhaused
+	if (illegal_ranks.size() == expr_size_factorial) {
+		return expr_size_factorial;
+	}
+
+	//while there are still sufficient permutations left
+	while ((illegal_ranks.size() < ((expr_size_factorial * 3) / 4)) || (expr_size_factorial < 7)) {
+		//generate random permutation rank
+		srand(time(nullptr));
+		r = rand() / (RAND_MAX / expr_size_factorial);
+
+		//test if this permutation was already tested
+		it = illegal_ranks.find(r);
+		if (it == illegal_ranks.end()) {
+			//if not, return the rank
+			illegal_ranks.insert(r);
+			return r;
 		}
 	}
+	return expr_size_factorial;
 }
 
 void ExpressionExecutor::Execute(vector<unique_ptr<Expression>> &expressions, DataChunk &result) {
@@ -85,17 +107,40 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 			chunk->SetSelectionVector(intermediate);
 		}
 	} else {
+
+		if (exploration_phase) {
+			index_t rank = GetRandomDistinctRank(expr_size_factorial, illegal_ranks);
+			if (rank == expr_size_factorial) {
+				count = 0;
+				exploration_phase = false;
+
+				// get the iteration of the next random exploration phase
+				srand(time(nullptr));
+				random_explore = 200 + rand() / (RAND_MAX / (200)); //TODO: better value, not randomly 200
+			} else {
+				//get a new random permutation
+				current.permutation = rank_0_permutation.permutation;
+				GetPermutationByRank(rank, expressions.size(), current.permutation);
+			}
+		}
+
 		//more than one expression, apply adaptive algorithm
 		index_t start_idx = 0;
-		index_t end_idx = current_perm.size();
-		index_t selectivity = 0;
+		index_t end_idx;
+
+		//statistics
 		chrono::time_point<chrono::high_resolution_clock> start_time;
 		chrono::time_point<chrono::high_resolution_clock> end_time;
 
 		if (exploration_phase) {
-			start_idx = count;
-			end_idx = count + expressions.size();
+			end_idx = current.permutation.size();
+		} else {
+			end_idx = best.permutation.size();
 		}
+
+		//get the selectivity and the runtime for the current permutation
+		index_t selectivity = 0;
+		start_time = chrono::high_resolution_clock::now();
 
 		//evaluate all expressions
 		for (index_t i = start_idx; i < end_idx; i++) {
@@ -106,58 +151,69 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 				//evaluation of current expression
 				if (exploration_phase) {
 					//update metrics
-					selectivity_count[i % expressions.size()] += chunk->data[0].count;
-					execution_count[i % expressions.size()]++;
+					selectivity_count[current.permutation[i]] += chunk->data[0].count;
+					execution_count[current.permutation[i]]++;
+
+					//evaluate expression
 					selectivity += chunk->data[0].count;
-					if (i == start_idx) {
-						start_time = chrono::high_resolution_clock::now();
-						Execute(*expressions[i % expressions.size()], intermediate);
-						end_time = chrono::high_resolution_clock::now();
-					} else {
-						Execute(*expressions[i % expressions.size()], intermediate);
-					}
+					Execute(*expressions[current.permutation[i]], intermediate);
+
 				} else {
 					//update metrics
-					selectivity_count[current_perm[i]] += chunk->data[0].count;
-					execution_count[current_perm[i]]++;
+					selectivity_count[best.permutation[i]] += chunk->data[0].count;
+					execution_count[best.permutation[i]]++;
+
+					//evaluate expression
 					selectivity += chunk->data[0].count;
-					Execute(*expressions[current_perm[i]], intermediate);
+					Execute(*expressions[best.permutation[i]], intermediate);
 				}
 
 				assert(intermediate.type == TypeId::BOOLEAN);
+
 				//if constant and false/null, set count == 0 to fetch the next chunk
 				if (intermediate.IsConstant()) {
 					if (!intermediate.data[0] || intermediate.nullmask[0]) {
 						chunk->data[0].count = 0;
-						if (exploration_phase && i == start_idx) {
-							scores.push({i % expressions.size(), 0.0});
-						}
 						break;
 					}
 				} else {
 					chunk->SetSelectionVector(intermediate);
-					if (exploration_phase && i == start_idx) {
-						auto runtime = chrono::duration_cast<chrono::duration<double>>(end_time - start_time).count();
-						scores.push({i % expressions.size(), (double)chunk->size() * runtime});
-					}
 				}
 			} else {
 				break;
 			}
 		}
 
+		end_time = chrono::high_resolution_clock::now();
+
 		if (exploration_phase) {
-			if (count == expressions.size() - 1) {
-				GetNewPermutation();
-				exploration_phase = false;
-				count = 0;
-				// get the iteration of the next random exploration phase
-				srand(time(nullptr));
-				random_explore = 200 + rand() / (RAND_MAX / (200));
+			//set statistics of the current permutation
+			current.runtime = chrono::duration_cast<chrono::duration<double>>(end_time - start_time).count();
+			current.selectivity = selectivity;
+
+			//compare to 'best' permutation
+			if (best.runtime == -1.0) {
+				best = current;
 			} else {
-				count++;
+				if (current < best) {
+					best = current;
+					count = 0;
+				} else {
+					count++;
+				}
+
+				//TODO: what could be a good threshold? How many permutations should be tested before taking the 'best' one
+				if (count == 3) {
+					count = 0;
+					exploration_phase = false;
+
+					// get the iteration of the next random exploration phase
+					srand(time(nullptr));
+					random_explore = 200 + rand() / (RAND_MAX / (200));
+				}
 			}
 		} else {
+
 			auto normed_sel = (double)selectivity / (STANDARD_VECTOR_SIZE * expressions.size());
 			if (count >= expressions.size() * 4 && count < random_explore) {
 				auto mean = score / count;
@@ -166,6 +222,11 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 					exploration_phase = true;
 					score = 0.0;
 					count = 0;
+					best.runtime = -1.0;
+					illegal_ranks.clear();
+
+					//TODO: adaptively change threshold
+					//TODO: add last permutation to metrics permutation vector
 				} else {
 					score += normed_sel;
 					count++;
@@ -175,10 +236,16 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 				exploration_phase = true;
 				score = 0.0;
 				count = 0;
+				best.runtime = -1.0;
+				illegal_ranks.clear();
+
+				//TODO: adaptively change threshold
+				//TODO: add last permutation to metrics permutation vector
 			} else {
 				score += normed_sel;
 				count++;
 			}
+
 		}
 	}
 }
