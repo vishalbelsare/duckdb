@@ -13,21 +13,21 @@
 
 namespace duckdb {
 
-//! PhysicalFilter represents a filter operator. It removes non-matching tupels
-//! from the result. Note that it does not physically change the data, it only
-//! adds a selection vector to the chunk.
-class PhysicalFilter : public PhysicalOperator {
+	//! PhysicalFilter represents a filter operator. It removes non-matching tupels
+	//! from the result. Note that it does not physically change the data, it only
+	//! adds a selection vector to the chunk.
+	class PhysicalFilter : public PhysicalOperator {
 	public:
-		PhysicalFilter(LogicalOperator &op, vector<unique_ptr<Expression>> select_list)
-			: PhysicalOperator(PhysicalOperatorType::FILTER, op.types), expressions(std::move(select_list)) {
+		PhysicalFilter(vector<TypeId> types, vector<unique_ptr<Expression>> select_list)
+		    : PhysicalOperator(PhysicalOperatorType::FILTER, types), expressions(std::move(select_list)) {
 		}
 
 		vector<unique_ptr<Expression>> expressions;
 
-	public:
-		void GetChunkInternal(ClientContext &context, DataChunk &chunk, PhysicalOperatorState *state) override;
-		string ExtraRenderInformation() const override;
-		unique_ptr<PhysicalOperatorState> GetOperatorState() override;
+		public:
+			void GetChunkInternal(ClientContext &context, DataChunk &chunk, PhysicalOperatorState *state) override;
+			string ExtraRenderInformation() const override;
+			unique_ptr<PhysicalOperatorState> GetOperatorState() override;
 	};
 
 	class PhysicalFilterOperatorState : public PhysicalOperatorState {
