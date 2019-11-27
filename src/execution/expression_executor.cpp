@@ -46,13 +46,15 @@ void GetPermutationByRank(index_t rank, index_t n, vector<index_t> &permutation)
 index_t GetRandomDistinctRank(index_t expr_size_factorial, set<index_t> &illegal_ranks) {
 	set<index_t>::iterator it;
 	index_t r;
+
 	//all permutations are already exhaused
 	if (illegal_ranks.size() == expr_size_factorial) {
 		return expr_size_factorial;
 	}
 
+	index_t max_attempts = 0; //TODO: good threshold for max_attempts?
 	//while there are still sufficient permutations left
-	while ((illegal_ranks.size() < ((expr_size_factorial * 3) / 4)) || (expr_size_factorial < 7)) {
+	while (((illegal_ranks.size() < ((expr_size_factorial * 2) / 4)) || (expr_size_factorial < 7)) && (max_attempts < 100)) {
 		//generate random permutation rank
 		srand(time(nullptr));
 		r = rand() / (RAND_MAX / expr_size_factorial);
@@ -64,6 +66,7 @@ index_t GetRandomDistinctRank(index_t expr_size_factorial, set<index_t> &illegal
 			illegal_ranks.insert(r);
 			return r;
 		}
+		max_attempts++;
 	}
 	return expr_size_factorial;
 }
@@ -114,12 +117,15 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 				count = 0;
 				exploration_phase = false;
 
+				//metrics
+				permutations.push_back(best.permutation);
+
 				// get the iteration of the next random exploration phase
 				srand(time(nullptr));
 				random_explore = 200 + rand() / (RAND_MAX / (200)); //TODO: better value, not randomly 200
 			} else {
 				//get a new random permutation
-				current.permutation = rank_0_permutation.permutation;
+				current.permutation = rank_0_permutation;
 				GetPermutationByRank(rank, expressions.size(), current.permutation);
 			}
 		}

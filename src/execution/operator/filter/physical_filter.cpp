@@ -31,7 +31,7 @@ void PhysicalFilter::GetChunkInternal(ClientContext &context, DataChunk &chunk, 
 			state->expr_executor.expr_size_factorial = 1;
 			for (index_t i = 1; i <= expressions.size(); i++) {
 				state->expr_executor.expr_size_factorial *= i;
-				state->expr_executor.rank_0_permutation.permutation.push_back(i - 1);
+				state->expr_executor.rank_0_permutation.push_back(i - 1);
 			}
 		}
 

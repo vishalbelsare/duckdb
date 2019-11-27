@@ -57,7 +57,7 @@ class ExpressionExecutor {
 		//! All permutation ranks already tested in the exploration phase
 		std::set<index_t> illegal_ranks;
 		//! The default permutation from which all others are created
-		Permutation rank_0_permutation; //TODO: we actually only need a std::vector<index_t> here
+		std::vector<index_t> rank_0_permutation;
 		//! The currently tested permutation
 		Permutation current;
 		//! The currently 'best' permutation
