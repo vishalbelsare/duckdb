@@ -50,7 +50,7 @@ class ExpressionExecutor {
 				return runtime == p.runtime && selectivity == p.selectivity && permutation == p.permutation;
 			}
 			bool operator<(const Permutation &p) const {
-				return runtime > p.runtime || (runtime == p.runtime && selectivity < p.selectivity);
+				return runtime < p.runtime || (runtime == p.runtime && selectivity < p.selectivity);
 			}
 		};
 
