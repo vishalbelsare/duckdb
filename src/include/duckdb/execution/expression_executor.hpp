@@ -18,6 +18,7 @@
 #include <set>
 #include <iostream>
 #include <random>
+#include <chrono>
 
 namespace duckdb {
 
@@ -64,8 +65,9 @@ class ExpressionExecutor {
 		Permutation current;
 		//! The currently 'best' permutation
 		Permutation best;
-
+		//! The number of different possible permutations
 		index_t expr_size_factorial;
+		//! A random number generator to get random permutation ranks and exploration intervals
 		std::default_random_engine generator;
 
 		//! Used to switch between execution and exploration phase
@@ -92,6 +94,12 @@ class ExpressionExecutor {
 		index_t calls_to_get_chunk;
 		//! Stores the calculated permutation of each exploration phase
 		std::vector<std::vector<index_t>> permutations;
+		//! Set the starting point of the current exploration phase to calculate the time spend in exploration
+		std::chrono::time_point<std::chrono::high_resolution_clock> start_time_explore;
+		//! Set the ending point of the current exploration phase to calculate the time spend in exploration
+		std::chrono::time_point<std::chrono::high_resolution_clock> end_time_explore;
+		//! Track the time spend in exploration
+		double time_in_explore;
 
 	protected:
 		void Execute(Expression &expr, Vector &result);

@@ -15,6 +15,7 @@ ExpressionExecutor::ExpressionExecutor() : chunk(nullptr) {
 	exploration_phase = true;
 	calls_to_merge = 0;
 	calls_to_get_chunk = 0;
+	time_in_explore = 0.0;
 	score = 0.0;
 	threshold = 0.05;
 	best.runtime = -1.0;
@@ -120,6 +121,8 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 				exploration_phase = false;
 
 				//metrics
+				end_time_explore = chrono::high_resolution_clock::now();
+				time_in_explore += chrono::duration_cast<chrono::duration<double>>(end_time_explore - start_time_explore).count();
 				permutations.push_back(best.permutation);
 
 				// get the iteration of the next random exploration phase
@@ -217,6 +220,8 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 
 					//metrics
 					permutations.push_back(best.permutation);
+					end_time_explore = chrono::high_resolution_clock::now();
+					time_in_explore += chrono::duration_cast<chrono::duration<double>>(end_time_explore - start_time_explore).count();
 
 					// get the iteration of the next random exploration phase
 					uniform_int_distribution<int> distribution(0, 200); //TODO: better value than 200
@@ -236,6 +241,8 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 					best.runtime = -1.0;
 					illegal_ranks.clear();
 
+					start_time_explore = chrono::high_resolution_clock::now();
+
 					//TODO: adaptively change threshold
 					//TODO: add last permutation to metrics permutation vector
 				} else {
@@ -249,6 +256,8 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 				count = 0;
 				best.runtime = -1.0;
 				illegal_ranks.clear();
+
+				start_time_explore = chrono::high_resolution_clock::now();
 
 				//TODO: adaptively change threshold
 				//TODO: add last permutation to metrics permutation vector

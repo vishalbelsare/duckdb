@@ -22,10 +22,7 @@ void PhysicalFilter::GetChunkInternal(ClientContext &context, DataChunk &chunk, 
 
 		assert(expressions.size() > 0);
 
-		if (expressions.size() != state->expr_executor.selectivity_count.size()) {
-			//required for metrics
-			state->expr_executor.selectivity_count.resize(expressions.size());
-			state->expr_executor.execution_count.resize(expressions.size());
+		if (expressions.size() != state->expr_executor.selectivity_count.size() && expressions.size() > 1) {
 
 			//initialize factorial and default permutation
 			state->expr_executor.expr_size_factorial = 1;
@@ -33,6 +30,11 @@ void PhysicalFilter::GetChunkInternal(ClientContext &context, DataChunk &chunk, 
 				state->expr_executor.expr_size_factorial *= i;
 				state->expr_executor.rank_0_permutation.push_back(i - 1);
 			}
+
+			//required for metrics
+			state->expr_executor.selectivity_count.resize(expressions.size());
+			state->expr_executor.execution_count.resize(expressions.size());
+			state->expr_executor.start_time_explore = chrono::high_resolution_clock::now();
 		}
 
 		//update metrics
@@ -76,6 +78,7 @@ PhysicalFilterOperatorState::~PhysicalFilterOperatorState() {
 	/*
 	std::cout << "Calls to GetChunk: " << expr_executor.calls_to_get_chunk << endl;
 	std::cout << "Calls to Merge: " << expr_executor.calls_to_merge << endl;
+	std::cout << "Time spend in exploration: " << expr_executor.time_in_explore << endl;
 	std::cout << "Execution count:" << endl;
 	for (const auto& item : expr_executor.execution_count) {
 		std::cout << item << endl;
