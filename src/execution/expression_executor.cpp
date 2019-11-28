@@ -4,6 +4,8 @@
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 
 #include <chrono>
+#include <iostream>
+#include <random>
 
 using namespace duckdb;
 using namespace std;
@@ -43,9 +45,10 @@ void GetPermutationByRank(index_t rank, index_t n, vector<index_t> &permutation)
     GetPermutationByRank(q, n - 1, permutation);
 }
 
-index_t GetRandomDistinctRank(index_t expr_size_factorial, set<index_t> &illegal_ranks) {
+index_t GetRandomDistinctRank(index_t expr_size_factorial, set<index_t> &illegal_ranks, default_random_engine& generator) {
 	set<index_t>::iterator it;
 	index_t r;
+    uniform_int_distribution<int> distribution(0, expr_size_factorial);
 
 	//all permutations are already exhaused
 	if (illegal_ranks.size() == expr_size_factorial) {
@@ -56,8 +59,7 @@ index_t GetRandomDistinctRank(index_t expr_size_factorial, set<index_t> &illegal
 	//while there are still sufficient permutations left
 	while (((illegal_ranks.size() < ((expr_size_factorial * 2) / 4)) || (expr_size_factorial < 7)) && (max_attempts < 100)) {
 		//generate random permutation rank
-		srand(time(nullptr));
-		r = rand() / (RAND_MAX / expr_size_factorial);
+		r = distribution(generator);
 
 		//test if this permutation was already tested
 		it = illegal_ranks.find(r);
@@ -112,7 +114,7 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 	} else {
 
 		if (exploration_phase) {
-			index_t rank = GetRandomDistinctRank(expr_size_factorial, illegal_ranks);
+			index_t rank = GetRandomDistinctRank(expr_size_factorial, illegal_ranks, generator);
 			if (rank == expr_size_factorial) {
 				count = 0;
 				exploration_phase = false;
@@ -121,8 +123,8 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 				permutations.push_back(best.permutation);
 
 				// get the iteration of the next random exploration phase
-				srand(time(nullptr));
-				random_explore = 200 + rand() / (RAND_MAX / (200)); //TODO: better value, not randomly 200
+				uniform_int_distribution<int> distribution(0, 200); //TODO: better value than 200
+				random_explore = distribution(generator);
 			} else {
 				//get a new random permutation
 				current.permutation = rank_0_permutation;
@@ -213,9 +215,12 @@ void ExpressionExecutor::Merge(vector<unique_ptr<Expression>> &expressions) {
 					count = 0;
 					exploration_phase = false;
 
+					//metrics
+					permutations.push_back(best.permutation);
+
 					// get the iteration of the next random exploration phase
-					srand(time(nullptr));
-					random_explore = 200 + rand() / (RAND_MAX / (200));
+					uniform_int_distribution<int> distribution(0, 200); //TODO: better value than 200
+					random_explore = distribution(generator);
 				}
 			}
 		} else {

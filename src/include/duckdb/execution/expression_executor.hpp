@@ -16,6 +16,8 @@
 
 #include <queue>
 #include <set>
+#include <iostream>
+#include <random>
 
 namespace duckdb {
 
@@ -64,6 +66,7 @@ class ExpressionExecutor {
 		Permutation best;
 
 		index_t expr_size_factorial;
+		std::default_random_engine generator;
 
 		//! Used to switch between execution and exploration phase
 		bool exploration_phase;
