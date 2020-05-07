@@ -265,7 +265,7 @@ settings.json
 
 # PyCharm files
 .idea
-
+venv/
 # OSX dir files
 .DS_Store
 

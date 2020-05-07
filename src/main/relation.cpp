@@ -194,19 +194,19 @@ BoundStatement Relation::Bind(Binder &binder) {
 	return binder.Bind((SQLStatement &)stmt);
 }
 
-void Relation::Insert(string table_name) {
-	Insert(DEFAULT_SCHEMA, table_name);
+unique_ptr<QueryResult> Relation::Insert(string table_name) {
+	return Insert(DEFAULT_SCHEMA, table_name);
 }
 
-void Relation::Insert(string schema_name, string table_name) {
+unique_ptr<QueryResult> Relation::Insert(string schema_name, string table_name) {
 	auto insert = make_shared<InsertRelation>(shared_from_this(), schema_name, table_name);
-	insert->Execute();
+	return insert->Execute();
 }
 
-void Relation::Insert(vector<vector<Value>> values){
+unique_ptr<QueryResult> Relation::Insert(vector<vector<Value>> values){
 	vector<string> column_names;
 	auto rel = make_shared<ValueRelation>(context, move(values), move(column_names), "values");
-	rel->Insert(GetAlias());
+	return rel->Insert(GetAlias());
 }
 
 void Relation::Create(string table_name) {

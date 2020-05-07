@@ -5,6 +5,7 @@ import shutil
 
 import duckdb
 
+
 @pytest.fixture(scope="function")
 def duckdb_empty_cursor(request):
     test_dbfarm = tmp_path.resolve().as_posix()
@@ -13,12 +14,12 @@ def duckdb_empty_cursor(request):
     cursor = connection.cursor()
     return cursor
 
+
 @pytest.fixture(scope="function")
 def duckdb_cursor(request):
-
     connection = duckdb.connect('')
     cursor = connection.cursor()
-   # cursor.create('integers', {'i': numpy.arange(10)})
+    # cursor.create('integers', {'i': numpy.arange(10)})
     cursor.execute('CREATE TABLE integers (i integer)')
     cursor.execute('INSERT INTO integers VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9),(NULL)')
     cursor.execute('CREATE TABLE timestamps (t timestamp)')
@@ -40,7 +41,7 @@ def duckdb_cursor_autocommit(request, tmp_path):
     connection = duckdb.connect(test_dbfarm)
     connection.set_autocommit(True)
     cursor = connection.cursor()
-    return (cursor, connection, test_dbfarm)
+    return cursor, connection, test_dbfarm
 
 
 @pytest.fixture(scope="function")

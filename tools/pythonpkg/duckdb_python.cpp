@@ -821,6 +821,14 @@ struct DuckDBPyRelation {
 		return res->fetchdf();
 	}
 
+	py::object to_list() {
+		auto res = make_unique<DuckDBPyResult>();
+		res->result = rel->Execute();
+		if (!res->result->success) {
+			throw runtime_error(res->result->error);
+		}
+		return res->fetchall();
+	}
 	unique_ptr<DuckDBPyRelation> union_(DuckDBPyRelation *other) {
 		return make_unique<DuckDBPyRelation>(rel->Union(other->rel));
 	}
@@ -877,13 +885,23 @@ struct DuckDBPyRelation {
 		return default_connection()->from_df(df)->query(view_name, sql_query);
 	}
 
-	void insert_into(string table) {
-		rel->Insert(table);
+	unique_ptr<DuckDBPyResult> insert_into(string table) {
+		auto res = make_unique<DuckDBPyResult>();
+		res->result = rel->Insert(table);
+		if (!res->result->success) {
+			throw runtime_error(res->result->error);
+		}
+		return res;
 	}
 
-	void insert(py::object params = py::list()) {
+	unique_ptr<DuckDBPyResult> insert(py::object params = py::list()) {
+		auto res = make_unique<DuckDBPyResult>();
 		vector<vector<Value>> values {DuckDBPyConnection::transform_python_param_list(params)};
-		rel->Insert(values);
+		res->result =  rel->Insert(values);
+		if (!res->result->success) {
+			throw runtime_error(res->result->error);
+		}
+		return res;
 	}
 
 	void create(string table) {
@@ -985,6 +1003,7 @@ PYBIND11_MODULE(duckdb, m) {
 	    .def("insert", &DuckDBPyRelation::insert, "some doc string for insert", py::arg("values"))
 	    .def("create", &DuckDBPyRelation::create, "some doc string for create", py::arg("table_name"))
 	    .def("to_df", &DuckDBPyRelation::to_df, "some doc string for to_df")
+	    .def("to_list", &DuckDBPyRelation::to_list, "some doc string for to_list")
 	    .def("create_view", &DuckDBPyRelation::create_view, "some doc string for create_view", py::arg("view_name"),
 	         py::arg("replace") = true)
 	    .def("df", &DuckDBPyRelation::to_df, "some doc string for df")
