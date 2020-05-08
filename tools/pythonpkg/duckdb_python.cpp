@@ -777,6 +777,14 @@ struct DuckDBPyRelation {
 		return default_connection()->from_df(df)->filter(expr);
 	}
 
+	unique_ptr<DuckDBPyRelation> count(string expr) {
+		return make_unique<DuckDBPyRelation>(rel->Filter(expr));
+	}
+
+	static unique_ptr<DuckDBPyRelation> count_df(py::object df, string expr) {
+		return default_connection()->from_df(df)->count(expr);
+	}
+
 	unique_ptr<DuckDBPyRelation> limit(int64_t n) {
 		return make_unique<DuckDBPyRelation>(rel->Limit(n));
 	}
@@ -1022,6 +1030,7 @@ PYBIND11_MODULE(duckdb, m) {
 	m.def("aggregate", &DuckDBPyRelation::aggregate_df, "some doc string for aggregate", py::arg("df"),
 	      py::arg("aggr_expr"), py::arg("group_expr") = "");
 	m.def("distinct", &DuckDBPyRelation::distinct_df, "some doc string for distinct", py::arg("df"));
+	m.def("count", &DuckDBPyRelation::distinct_df, "some doc string for distinct", py::arg("df"));
 	m.def("limit", &DuckDBPyRelation::limit_df, "some doc string for limit", py::arg("df"), py::arg("n"));
 	m.def("query", &DuckDBPyRelation::query_df, "some doc string for query", py::arg("df"),
 	      py::arg("virtual_table_name"), py::arg("sql_query"));
