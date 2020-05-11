@@ -176,6 +176,23 @@ shared_ptr<Relation> Relation::Aggregate(vector<string> aggregates, vector<strin
 	return make_shared<AggregateRelation>(shared_from_this(), move(aggregate_list), move(group_list));
 }
 
+shared_ptr<Relation> Relation::Count(vector<string> counts) {
+    for (auto& cnt: counts){
+        cnt = "count(" + cnt + ")";
+    }
+	auto count_list = StringListToExpressionList(move(counts));
+	return make_shared<AggregateRelation>(shared_from_this(), move(count_list));
+}
+
+shared_ptr<Relation> Relation::Count(vector<string> counts, vector<string> groups) {
+        for (auto& cnt: counts){
+        cnt = "count(" + cnt + ")";
+    }
+	auto count_list = StringListToExpressionList(move(counts));
+	auto group_list = StringListToExpressionList(move(groups));
+	return make_shared<AggregateRelation>(shared_from_this(), move(counts), move(group_list));
+}
+
 string Relation::GetAlias() {
 	return "relation";
 }

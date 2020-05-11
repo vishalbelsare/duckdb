@@ -90,11 +90,15 @@ public:
 	// DISTINCT operation
 	shared_ptr<Relation> Distinct();
 
-	// AGGREGATES
+	// GENERIC AGGREGATES
 	shared_ptr<Relation> Aggregate(string aggregate_list);
 	shared_ptr<Relation> Aggregate(vector<string> aggregates);
 	shared_ptr<Relation> Aggregate(string aggregate_list, string group_list);
 	shared_ptr<Relation> Aggregate(vector<string> aggregates, vector<string> groups);
+
+	// COUNT AGGREGATE
+	shared_ptr<Relation> Count(vector<string> counts);
+	shared_ptr<Relation> Count(vector<string> counts, vector<string> groups);
 
 	// ALIAS
 	shared_ptr<Relation> Alias(string alias);
