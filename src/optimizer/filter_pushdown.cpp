@@ -57,7 +57,10 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownJoin(unique_ptr<LogicalOpera
 	case JoinType::MARK:
 		return PushdownMarkJoin(move(op), left_bindings, right_bindings);
 	case JoinType::SINGLE:
-		return PushdownSingleJoin(move(op), left_bindings, right_bindings);
+	case JoinType::SEMI:
+		return PushdownSingleSemiJoin(move(op), left_bindings, right_bindings);
+	case JoinType::ANTI:
+		return PushdownAntiJoin(move(op), left_bindings, right_bindings);
 	default:
 		// unsupported join type: stop pushing down
 		return FinishPushdown(move(op));

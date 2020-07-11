@@ -62,8 +62,11 @@ private:
 	// Pushdown a mark join
 	unique_ptr<LogicalOperator> PushdownMarkJoin(unique_ptr<LogicalOperator> op, unordered_set<idx_t> &left_bindings,
 	                                             unordered_set<idx_t> &right_bindings);
-	// Pushdown a single join
-	unique_ptr<LogicalOperator> PushdownSingleJoin(unique_ptr<LogicalOperator> op, unordered_set<idx_t> &left_bindings,
+	// Pushdown a single or semi join
+	unique_ptr<LogicalOperator> PushdownSingleSemiJoin(unique_ptr<LogicalOperator> op, unordered_set<idx_t> &left_bindings,
+	                                               unordered_set<idx_t> &right_bindings);
+	// Pushdown an anti join
+	unique_ptr<LogicalOperator> PushdownAntiJoin(unique_ptr<LogicalOperator> op, unordered_set<idx_t> &left_bindings,
 	                                               unordered_set<idx_t> &right_bindings);
 
 	// Finish pushing down at this operator, creating a LogicalFilter to store any of the stored filters and recursively
