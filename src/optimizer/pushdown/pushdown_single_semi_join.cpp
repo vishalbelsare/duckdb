@@ -22,7 +22,7 @@ unique_ptr<Expression> EquivalenceMapRewrite(unique_ptr<Expression> expr, expres
 unique_ptr<LogicalOperator> FilterPushdown::PushdownSingleSemiJoin(unique_ptr<LogicalOperator> op,
                                                                unordered_set<idx_t> &left_bindings,
                                                                unordered_set<idx_t> &right_bindings) {
-	auto &join = (LogicalJoin &) op;
+	auto &join = (LogicalJoin &) *op;
 	assert(join.join_type == JoinType::SINGLE || join.join_type == JoinType::SEMI);
 	expression_map_t<Expression*> equivalence_map;
 	if (op->type == LogicalOperatorType::DELIM_JOIN || op->type == LogicalOperatorType::COMPARISON_JOIN) {
