@@ -14,10 +14,10 @@ git:
 matrix:
   include:
 
-    - os: linux
-      dist: bionic
-      name: GCC 10
-      if: (branch !~ ^r/.*$ AND head_branch !~ ^r/.*$)
+    # - os: linux
+    #   dist: bionic
+    #   name: GCC 10
+    #   if: (branch !~ ^r/.*$ AND head_branch !~ ^r/.*$)
 
       addons:
         apt:
