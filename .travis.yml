@@ -610,10 +610,8 @@ matrix:
         - ./configure
         - cd tools/rpkg
         - R -q -e 'tic::script()'
-        - python ../upload-s3.py rstats/src/contrib duckdb_*.tar.gz PACKAGES*
-        - python ../upload-s3.py rstats duckdb_*.tar.gz
-        - python3 ../../scripts/asset-upload.py duckdb_r_src.tar.gz=duckdb_*.tar.gz
       after_success:
+        - cd tools/rpkg
         - R -q -e 'tic::after_success()'
       after_failure:
         - R -q -e 'tic::after_failure()'
@@ -647,10 +645,8 @@ matrix:
       script:
         - ./configure
         -  R -q -e 'tic::script()'
-        - python3 ../upload-s3.py rstats/bin/macosx/contrib/4.0 duckdb_*.tgz PACKAGES*
-        - python3 ../upload-s3.py rstats duckdb_*.tgz
-        - python3 ../../scripts/asset-upload.py duckdb_r_osx.tgz=duckdb_*.tgz
       after_success:
+        - cd tools/rpkg
         - R -q -e 'tic::after_success()'
       after_failure:
         - R -q -e 'tic::after_failure()'
@@ -672,4 +668,3 @@ matrix:
         - cd tools/rpkg
         - sh configure
         - sh build-win
-

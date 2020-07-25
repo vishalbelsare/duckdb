@@ -1,6 +1,6 @@
 # installs dependencies, runs R CMD check, runs covr::codecov()
 if (Sys.info()[["sysname"]] != "Windows") {
-  do_package_checks(error_on = "warning", codecov = FALSE)
+  do_package_checks(error_on = "warning")
 } else {
   do_package_checks(error_on = "warning", codecov = FALSE)
 }
