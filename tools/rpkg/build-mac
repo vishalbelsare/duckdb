@@ -6,6 +6,7 @@ set -x
 cd $(dirname $0)
 
 R CMD build .
+R CMD INSTALL --build duckdb_*.tar.gz
 R -q -e 'tic::script()'
 R -q -e 'tic::after_success()'
 
