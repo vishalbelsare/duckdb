@@ -602,21 +602,12 @@ matrix:
         - R -q -e 'tic::before_install()'
 
       install:
-        - R CMD build .
         - R -q -e 'tic::install()'
       before_script:
         - R -q -e 'tic::before_script()'
       script:
         - ./configure
-        - cd tools/rpkg
-        - R -q -e 'tic::script()'
-      after_success:
-        - cd tools/rpkg
-        - R -q -e 'tic::after_success()'
-      after_failure:
-        - R -q -e 'tic::after_failure()'
-      after_script:
-        - R -q -e 'tic::after_script()'
+        - sh build-linux
 
     - os: osx
       osx_image: xcode11.5
@@ -638,20 +629,12 @@ matrix:
         - R -q -e 'tic::before_install()'
 
       install:
-        - R CMD build .
         - R -q -e 'tic::install()'
       before_script:
         - R -q -e 'tic::before_script()'
       script:
         - ./configure
-        -  R -q -e 'tic::script()'
-      after_success:
-        - cd tools/rpkg
-        - R -q -e 'tic::after_success()'
-      after_failure:
-        - R -q -e 'tic::after_failure()'
-      after_script:
-        - R -q -e 'tic::after_script()'
+        -  sh build-mac
 
     - os: windows
       name: R Package
