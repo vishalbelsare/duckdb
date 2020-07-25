@@ -602,6 +602,7 @@ matrix:
         - R -q -e 'tic::before_install()'
 
       install:
+        - R CMD build .
         - R -q -e 'tic::install()'
       before_script:
         - R -q -e 'tic::before_script()'
@@ -638,6 +639,7 @@ matrix:
         - R -q -e 'tic::before_install()'
 
       install:
+        - R CMD build .
         - R -q -e 'tic::install()'
       before_script:
         - R -q -e 'tic::before_script()'
@@ -666,8 +668,6 @@ matrix:
         - choco install rtools -y
         - choco install python3 --version 3.7.3 -y --params "/InstallDir:C:\Python37-x64"
         - choco install curl -y --force
-        - export "PATH=/c/Rtools40/usr/bin:$PATH"
-        - export "R=C:/Program\ Files/R/R-4.0.2/bin/R.exe"
         - cd tools/rpkg
         - sh configure
         - sh build-win
