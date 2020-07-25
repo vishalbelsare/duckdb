@@ -10,14 +10,14 @@ if (Sys.info()[["sysname"]] == "Windows") {
 } else if (Sys.info()[["sysname"]] == "Darwin") {
   get_stage("after_success") %>%
     add_code_step(tools::write_PACKAGES(type = "mac.binary")) %>%
-    add_code_step(system2("python3", c("../upload-s3.py rstats duckdb_*.zip", "rstats duckdb_*.tgz"))) %>%
-    add_code_step(system2("python3", c("../upload-s3.py rstats duckdb_*.zip", "rstats/bin/macosx/contrib/4.0 duckdb_*.tgz PACKAGES*"))) %>%
-    add_code_step(system2("python3", c("../../scripts/asset-upload.py", "duckdb_r_osx.tgz=duckdb_*.tgz")))
+    add_code_step(system2("python3", c("../upload-s3.py", "rstats", "duckdb_*.tgz"))) %>%
+    add_code_step(system2("python3", c("../upload-s3.py", "rstats/bin/macosx/contrib/4.0", "duckdb_*.tgz","PACKAGES*"))) %>%
+    add_code_step(system2("python3", c("../../scripts/asset-upload.py", "duckdb_r_osx.tgz=duckdb_*.tgzz")))
 
 } else if (Sys.info()[["sysname"]] == "Linux") {
   get_stage("after_success") %>%
     add_code_step(tools::write_PACKAGES(type = "source")) %>%
-    add_code_step(system2("python3", c("../upload-s3.py rstats duckdb_*.zip", "rstats duckdb_*.tar.gz"))) %>%
-    add_code_step(system2("python3", c("../upload-s3.py rstats duckdb_*.zip", "rstats/src/contrib duckdb_*.tar.gz PACKAGES*"))) %>%
+    add_code_step(system2("python3", c("../upload-s3.py", "rstats", "duckdb_*.tar.gz"))) %>%
+    add_code_step(system2("python3", c("../upload-s3.py", "rstats/src/contrib", "duckdb_*.tar.gz","PACKAGES*"))) %>%
     add_code_step(system2("python3", c("../../scripts/asset-upload.py", "duckdb_r_src.tar.gz=duckdb_*.tar.gz")))
 }

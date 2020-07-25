@@ -661,7 +661,7 @@ matrix:
         - choco install python3 --version 3.7.3 -y --params "/InstallDir:C:\Python37-x64"
         - choco install curl -y --force
         - export "PATH=/c/Rtools40/usr/bin:$PATH"
-        - R=C:/Program\ Files/R/R-4.0.2/bin/R.exe
+        - export "R=C:/Program\ Files/R/R-4.0.2/bin/R.exe"
         - cd tools/rpkg
         - echo -e "options(Ncpus = 4, pkgType = 'binary', repos = structure(c(CRAN = 'https://cloud.r-project.org/')))" > $HOME/.Rprofile
         - ${R} -q -e 'if (!requireNamespace(\\\"remotes\\\")) install.packages(\\\"remotes\\\")'
