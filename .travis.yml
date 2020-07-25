@@ -608,6 +608,9 @@ matrix:
       script:
         - ./configure
         -  R -q -e 'tic::script()'
+        - python ../upload-s3.py rstats/src/contrib duckdb_*.tar.gz PACKAGES*
+        - python ../upload-s3.py rstats duckdb_*.tar.gz
+        - python3 ../../scripts/asset-upload.py duckdb_r_src.tar.gz=duckdb_*.tar.gz
       after_success:
         - R -q -e 'tic::after_success()'
       after_failure:
@@ -641,6 +644,9 @@ matrix:
       script:
         - ./configure
         -  R -q -e 'tic::script()'
+        - python3 ../upload-s3.py rstats/bin/macosx/contrib/4.0 duckdb_*.tgz PACKAGES*
+        - python3 ../upload-s3.py rstats duckdb_*.tgz
+        - python3 ../../scripts/asset-upload.py duckdb_r_osx.tgz=duckdb_*.tgz
       after_success:
         - R -q -e 'tic::after_success()'
       after_failure:
@@ -663,21 +669,6 @@ matrix:
         - export "PATH=/c/Rtools40/usr/bin:$PATH"
         - export "R=C:/Program\ Files/R/R-4.0.2/bin/R.exe"
         - cd tools/rpkg
-        - echo -e "options(Ncpus = 4, pkgType = 'binary', repos = structure(c(CRAN = 'https://cloud.r-project.org/')))" > $HOME/.Rprofile
-        - ${R} -q -e 'if (!requireNamespace(\\\"remotes\\\")) install.packages(\\\"remotes\\\")'
-        - ${R} -q -e 'remotes::install_github(\\\"ropensci/tic\\\", upgrade = \\\"always\\\"); print(tic::dsl_load()); tic::prepare_all_stages()'
-        - ${R} -q -e 'tic::before_install()'
+        - sh configure
+        - sh build-win
 
-      install:
-        - ${R} -q -e 'tic::install()'
-      before_script:
-        - ${R} -q -e 'tic::before_script()'
-      script:
-        - ./configure
-        - ${R} -q -e 'tic::script()'
-      after_success:
-        - ${R} -q -e 'tic::after_success()'
-      after_failure:
-        - ${R} -q -e 'tic::after_failure()'
-      after_script:
-        - ${R} -q -e 'tic::after_script()'
