@@ -12,9 +12,9 @@ echo -e "options(Ncpus = 4, pkgType = 'binary', repos = structure(c(CRAN = 'http
 "${R}" -q -e 'if (!requireNamespace(\\\"remotes\\\")) install.packages(\\\"remotes\\\")'
 "${R}" -q -e 'remotes::install_github(\\\"ropensci/tic\\\", upgrade = \\\"always\\\"); print(tic::dsl_load()); tic::prepare_all_stages()'
 "${R}" -q -e 'tic::before_install()'
+"${R}" -q -e 'tic::install()'
 "${R}" CMD build .
 "${R}" CMD INSTALL --build --no-multiarch duckdb_*.tar.gz
-"${R}" -q -e 'tic::install()'
 "${R}" -q -e 'tic::script()'
 
 "${R}" -q -e "tools::write_PACKAGES(dir = '.', type = 'win.binary')"
