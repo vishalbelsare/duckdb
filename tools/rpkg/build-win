@@ -17,4 +17,4 @@ echo -e "options(Ncpus = 4, pkgType = 'binary', repos = structure(c(CRAN = 'http
 "${R}" CMD INSTALL --build --no-multiarch duckdb_*.tar.gz
 "${R}" -q -e 'tic::script()'
 
-"${R}" -q -e 'tools::write_PACKAGES(dir = ".", type = "win.binary")'
+"${R}" -q -e "tools::write_PACKAGES(dir = '.', type = 'win.binary')"
