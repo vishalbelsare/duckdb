@@ -1,0 +1,19 @@
+# name: test/sql/copy/tiledb/test_tiledb_scan.test
+# description: Test basic tiledb reading
+# group: [tiledb]
+
+require tiledb
+
+statement ok
+PRAGMA enable_verification
+
+# Exception on missing file
+query I
+SELECT * FROM tiledb_scan('test/sql/copy/tiledb/data/quickstart_dense')
+----
+2
+3
+4
+6
+7
+8

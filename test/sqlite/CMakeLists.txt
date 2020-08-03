@@ -9,6 +9,11 @@ add_definitions(-DBUILD_PARQUET_EXTENSION=${BUILD_PARQUET_EXTENSION})
 include_directories(../../extension/parquet/include)
 endif()
 
+if(${BUILD_TILEDB_EXTENSION})
+    add_definitions(-DBUILD_TILEDB_EXTENSION=${BUILD_TILEDB_EXTENSION})
+    include_directories(../../extension/tiledb/include)
+endif()
+
 add_library_unity(test_sqlite
                   OBJECT
                   md5.cpp

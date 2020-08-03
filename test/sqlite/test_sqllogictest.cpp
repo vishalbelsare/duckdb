@@ -48,6 +48,10 @@
 #include "parquet-extension.hpp"
 #endif
 
+#ifdef BUILD_TILEDB_EXTENSION
+#include "tiledb-extension.hpp"
+#endif
+
 #include "test_helpers.hpp"
 
 #include <algorithm>
@@ -1081,6 +1085,13 @@ static void execute_file(string script) {
 #else
 				// icu extension required but not build: skip this test
 				return;
+            } else if (param == "tiledb") {
+#endif
+#ifdef BUILD_TILEDB_EXTENSION
+                db.LoadExtension<TileDBExtension>();
+#else
+                // icu extension required but not build: skip this test
+                return;
 #endif
 			} else if (param == "vector_size") {
 				// require a specific vector size
