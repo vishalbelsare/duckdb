@@ -9,7 +9,7 @@ PRAGMA enable_verification
 
 # Exception on missing file
 query I
-SELECT * FROM tiledb_scan('test/sql/copy/tiledb/data/quickstart_dense')
+SELECT a     FROM tiledb_scan('test/sql/copy/tiledb/data/quickstart_dense')
 ----
 2
 3
@@ -17,3 +17,8 @@ SELECT * FROM tiledb_scan('test/sql/copy/tiledb/data/quickstart_dense')
 6
 7
 8
+
+query I
+SELECT SUM(a) FROM tiledb_scan('test/sql/copy/tiledb/data/quickstart_dense')
+----
+30
