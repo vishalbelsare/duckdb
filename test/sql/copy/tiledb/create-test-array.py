@@ -12,7 +12,7 @@ def create_array():
 
     # The array will be dense with a single attribute "a" so each (i,j) cell can store an integer.
     schema = tiledb.ArraySchema(domain=dom, sparse=False,
-                                attrs=[tiledb.Attr(name="a", dtype=np.int32)])
+                                attrs=[tiledb.Attr(name="a", dtype=np.int32), tiledb.Attr(name="b", dtype=np.int32)])
 
     # Create the (empty) array on disk.
     tiledb.DenseArray.create(array_name, schema)
@@ -25,7 +25,7 @@ def write_array():
                          [5, 6, 7, 8],
                          [9, 10, 11, 12],
                          [13, 14, 15, 16]))
-        A[:] = data
+        A[:] = {"a": data, "b" : np.multiply(data, -1)}
 
 create_array()
 write_array()

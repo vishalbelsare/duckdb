@@ -8,17 +8,27 @@ statement ok
 PRAGMA enable_verification
 
 # Exception on missing file
-query I
-SELECT a     FROM tiledb_scan('test/sql/copy/tiledb/data/quickstart_dense')
+query IIII
+SELECT *  FROM tiledb_scan('test/sql/copy/tiledb/data/quickstart_dense')
 ----
-2
-3
-4
-6
-7
-8
+1	1	1	-1	
+1	2	2	-2	
+1	3	3	-3	
+1	4	4	-4	
+2	1	5	-5	
+2	2	6	-6	
+2	3	7	-7	
+2	4	8	-8	
+3	1	9	-9	
+3	2	10	-10	
+3	3	11	-11	
+3	4	12	-12	
+4	1	13	-13	
+4	2	14	-14	
+4	3	15	-15	
+4	4	16	-16
 
 query I
 SELECT SUM(a) FROM tiledb_scan('test/sql/copy/tiledb/data/quickstart_dense')
 ----
-30
+136
