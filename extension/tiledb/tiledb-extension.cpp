@@ -65,6 +65,8 @@ private:
 
 		data.array = make_unique<tiledb::Array>(data.ctx, file_name, TILEDB_READ);
 		tiledb::ArraySchema schema(data.ctx, file_name);
+		// TODO: what happens if a dimension is not an int32 or if they are of mixed type?
+		vector<int32_t> subarray;
 
 		// add all the domains as columns
 		auto domain = schema.domain();
@@ -72,6 +74,17 @@ private:
 			auto dim = domain.dimension(dim_idx);
 			names.push_back(dim.name());
 			return_types.push_back(type_from_tiledb(dim.type()));
+			// some gunky hack to define a catch-all subarray
+			switch (dim.type()) {
+			case TILEDB_INT32: {
+				auto domain = dim.domain<int32_t>();
+				subarray.push_back(domain.first);
+				subarray.push_back(domain.second);
+				break;
+			}
+			default:
+				throw NotImplementedException("Unsupported TileDB Datatype");
+			}
 		}
 
 		// now add all the attributes
@@ -81,9 +94,6 @@ private:
 			return_types.push_back(type_from_tiledb(attr.type()));
 		}
 
-		// TODO hard-coded
-		// TODO just get limits of dimensions here, for each dim push min & max
-		const std::vector<int> subarray = {1, 4, 1, 4};
 		data.query = make_unique<tiledb::Query>(data.ctx, *data.array);
 		data.query->set_subarray(subarray);
 		data.sql_types = return_types;
