@@ -32,6 +32,12 @@ DuckDB::DuckDB(const char *path, DBConfig *new_config) {
 		if (strcmp(path, ":memory:") == 0) {
 			config.temporary_directory = ".tmp";
 		}
+
+		// special treatment for rle compression [WIP] mode
+		if (strcmp(path, ":rle:") == 0) {
+			config.enable_rle = true;
+			config.temporary_directory = ".tmp";
+		}
 	}
 	if (new_config && !new_config->use_temporary_directory) {
 		// temporary directories explicitly disabled

@@ -21,7 +21,8 @@ add_library_unity(duckdb_storage
                   string_segment.cpp
                   storage_info.cpp
                   storage_lock.cpp
-                  wal_replay.cpp)
+                  wal_replay.cpp
+                  rle_segment.cpp)
 set(ALL_OBJECT_FILES
     ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:duckdb_storage>
     PARENT_SCOPE)

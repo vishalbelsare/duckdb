@@ -90,7 +90,6 @@ public:
 	//! Scans up to STANDARD_VECTOR_SIZE elements from the table starting
 	//! from offset and store them in result. Offset is incremented with how many
 	//! elements were returned.
-	//! Returns true if all pushed down filters were executed during data fetching
 	void Scan(Transaction &transaction, DataChunk &result, TableScanState &state, vector<column_t> &column_ids,
 	          unordered_map<idx_t, vector<TableFilter>> &table_filters);
 

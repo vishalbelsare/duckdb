@@ -107,6 +107,11 @@ static void pragma_enable_force_parallelism(ClientContext &context, vector<Value
 	context.force_parallelism = true;
 }
 
+static void pragma_enable_rle(ClientContext &context, vector<Value> parameters) {
+	auto &config = DBConfig::GetConfig(context);
+	config.enable_rle = true;
+}
+
 static void pragma_disable_force_parallelism(ClientContext &context, vector<Value> parameters) {
 	context.force_parallelism = false;
 }
@@ -163,6 +168,8 @@ void PragmaFunctions::RegisterFunction(BuiltinFunctions &set) {
 
 	set.AddFunction(PragmaFunction::PragmaAssignment("log_query_path", pragma_log_query_path, LogicalType::VARCHAR));
 	set.AddFunction(PragmaFunction::PragmaAssignment("explain_output", pragma_explain_output, LogicalType::VARCHAR));
+
+	set.AddFunction(PragmaFunction::PragmaStatement("enable_rle", pragma_enable_rle));
 }
 
 idx_t ParseMemoryLimit(string arg) {

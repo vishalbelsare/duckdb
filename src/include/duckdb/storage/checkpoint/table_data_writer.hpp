@@ -26,7 +26,7 @@ public:
 private:
 	void AppendData(Transaction &transaction, idx_t col_idx, Vector &data, idx_t count);
 
-	void CreateSegment(idx_t col_idx);
+	void CreateSegment(idx_t col_idx, bool rle_segment = false);
 	void FlushSegment(Transaction &transaction, idx_t col_idx);
 
 	void WriteDataPointers();
@@ -36,7 +36,7 @@ private:
 	CheckpointManager &manager;
 	TableCatalogEntry &table;
 
-	vector<unique_ptr<UncompressedSegment>> segments;
+	vector<unique_ptr<Segment>> segments;
 	vector<unique_ptr<SegmentStatistics>> stats;
 
 	vector<vector<DataPointer>> data_pointers;

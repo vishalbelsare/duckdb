@@ -1,12 +1,13 @@
 #include "duckdb/storage/checkpoint/table_data_writer.hpp"
 
-#include "duckdb/common/vector_operations/vector_operations.hpp"
-#include "duckdb/common/types/null_value.hpp"
-
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/serializer/buffered_serializer.hpp"
-
+#include "duckdb/common/types/null_value.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/config.hpp"
 #include "duckdb/storage/numeric_segment.hpp"
+#include "duckdb/storage/rle_segment.hpp"
 #include "duckdb/storage/string_segment.hpp"
 #include "duckdb/storage/table/column_segment.hpp"
 #include "duckdb/transaction/transaction.hpp"
@@ -46,13 +47,14 @@ TableDataWriter::~TableDataWriter() {
 
 void TableDataWriter::WriteTableData(ClientContext &context) {
 	auto &transaction = Transaction::GetTransaction(context);
+	auto &config = DBConfig::GetConfig(context);
 	// allocate segments to write the table to
 	segments.resize(table.columns.size());
 	data_pointers.resize(table.columns.size());
 	for (idx_t i = 0; i < table.columns.size(); i++) {
 		auto type_id = table.columns[i].type.InternalType();
 		stats.push_back(make_unique<SegmentStatistics>(type_id, GetTypeIdSize(type_id)));
-		CreateSegment(i);
+		CreateSegment(i,config.enable_rle);
 	}
 
 	// now start scanning the table and append the data to the uncompressed segments
@@ -73,6 +75,7 @@ void TableDataWriter::WriteTableData(ClientContext &context) {
 		// now scan the table to construct the blocks
 		unordered_map<idx_t, vector<TableFilter>> mock;
 		table.storage->Scan(transaction, chunk, state, column_ids, mock);
+
 		if (chunk.size() == 0) {
 			break;
 		}
@@ -91,14 +94,18 @@ void TableDataWriter::WriteTableData(ClientContext &context) {
 	WriteDataPointers();
 }
 
-void TableDataWriter::CreateSegment(idx_t col_idx) {
+void TableDataWriter::CreateSegment(idx_t col_idx, bool rle_segment) {
 	auto type_id = table.columns[col_idx].type.InternalType();
-	if (type_id == PhysicalType::VARCHAR) {
-		auto string_segment = make_unique<StringSegment>(manager.buffer_manager, 0);
-		string_segment->overflow_writer = make_unique<WriteOverflowStringsToDisk>(manager);
-		segments[col_idx] = move(string_segment);
+	if (rle_segment) {
+        segments[col_idx] = make_unique<RLESegment>(manager.buffer_manager, type_id, 0);
 	} else {
-		segments[col_idx] = make_unique<NumericSegment>(manager.buffer_manager, type_id, 0);
+		if (type_id == PhysicalType::VARCHAR) {
+			auto string_segment = make_unique<StringSegment>(manager.buffer_manager, 0);
+			string_segment->overflow_writer = make_unique<WriteOverflowStringsToDisk>(manager);
+			segments[col_idx] = move(string_segment);
+		} else {
+			segments[col_idx] = make_unique<NumericSegment>(manager.buffer_manager, type_id, 0);
+		}
 	}
 }
 

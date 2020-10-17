@@ -31,7 +31,7 @@ void PersistentSegment::InitializeScan(ColumnScanState &state) {
 }
 
 void PersistentSegment::Scan(Transaction &transaction, ColumnScanState &state, idx_t vector_index, Vector &result) {
-	data->Scan(transaction, state, vector_index, result);
+	data->Scan(transaction, state, vector_index, result,true);
 }
 
 void PersistentSegment::FilterScan(Transaction &transaction, ColumnScanState &state, Vector &result,

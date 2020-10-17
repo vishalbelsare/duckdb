@@ -1,0 +1,18 @@
+# name: test/sql/rle/test_rle.test
+# description: Basic RLE test with one column of integers
+# group: [rle]
+
+statement ok
+PRAGMA enable_rle
+
+statement ok
+CREATE TABLE integers(i INTEGER)
+
+statement ok
+INSERT INTO integers VALUES (1), (1), (2), (3), (4),(4),(5)
+
+# test join on ungrouped aggregates
+query I
+SELECT count(*) FROM integers;
+----
+7

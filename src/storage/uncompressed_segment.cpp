@@ -10,17 +10,10 @@
 namespace duckdb {
 using namespace std;
 
-UncompressedSegment::UncompressedSegment(BufferManager &manager, PhysicalType type, idx_t row_start)
-    : manager(manager), type(type), block_id(INVALID_BLOCK), max_vector_count(0), tuple_count(0), row_start(row_start),
-      versions(nullptr) {
+UncompressedSegment::UncompressedSegment(BufferManager &manager, PhysicalType type, idx_t row_start): Segment(manager,type,row_start){
 }
 
-UncompressedSegment::~UncompressedSegment() {
-	if (block_id >= MAXIMUM_BLOCK) {
-		// if the uncompressed segment had an in-memory segment, destroy it when the uncompressed segment is destroyed
-		manager.DestroyBuffer(block_id);
-	}
-}
+UncompressedSegment::~UncompressedSegment() = default;
 
 void UncompressedSegment::Verify(Transaction &transaction) {
 #ifdef DEBUG

@@ -48,7 +48,8 @@ public:
 	OrderByNullType default_null_order = OrderByNullType::NULLS_FIRST;
 	//! enable COPY and related commands
 	bool enable_copy = true;
-
+	//! Enable RLE[WIP] usage, used for testing
+	bool enable_rle = false;
 public:
 	static DBConfig &GetConfig(ClientContext &context);
 
