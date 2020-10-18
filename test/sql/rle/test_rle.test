@@ -2,16 +2,28 @@
 # description: Basic RLE test with one column of integers
 # group: [rle]
 
+# load the DB from disk
+load :rle:
+
 statement ok
 PRAGMA enable_rle
 
+# create a database and insert values
 statement ok
 CREATE TABLE integers(i INTEGER)
 
 statement ok
 INSERT INTO integers VALUES (1), (1), (2), (3), (4),(4),(5)
 
-# test join on ungrouped aggregates
+# test if data is there
+query I
+SELECT count(*) FROM integers;
+----
+7
+
+# verify that the tables are still there after a restart
+restart
+
 query I
 SELECT count(*) FROM integers;
 ----

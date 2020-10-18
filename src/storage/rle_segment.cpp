@@ -33,8 +33,8 @@ RLESegment::RLESegment(BufferManager &manager, PhysicalType type, idx_t row_star
 
 static RLESegment::append_function_t GetAppendFunction(PhysicalType type) {
 	switch (type) {
-	case PhysicalType::INT32:
-		return append_loop<int32_t>;
+//	case PhysicalType::INT32:
+//		return append_loop<int32_t>;
 	default:
 		throw NotImplementedException("Unimplemented type for uncompressed segment");
 	}

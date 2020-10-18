@@ -96,7 +96,9 @@ protected:
 	                    vector<TableFilter> &tableFilter) override{};
 	//! Create a new update info for the specified transaction reflecting an update of the specified rows
 	UpdateInfo *CreateUpdateInfo(ColumnData &data, Transaction &transaction, row_t *ids, idx_t count,
-	                             idx_t vector_index, idx_t vector_offset, idx_t type_size) override{};
+	                             idx_t vector_index, idx_t vector_offset, idx_t type_size) override{
+		return nullptr;
+	};
 	void Verify(Transaction &transaction) override{};
 
 	void FetchBaseData(ColumnScanState &state, idx_t vector_index, Vector &result) override{};
