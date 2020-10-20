@@ -2,7 +2,7 @@
 using namespace duckdb;
 
 static RLESegment::append_function_t GetRLEAppendFunction(PhysicalType type);
-
+RLESegment::~RLESegment() = default;
 RLESegment::RLESegment(BufferManager &manager, PhysicalType type, idx_t row_start, block_id_t block)
     : Segment(manager, type, row_start){
 	// set up the different functions for this type of segment
@@ -31,6 +31,16 @@ RLESegment::RLESegment(BufferManager &manager, PhysicalType type, idx_t row_star
 		}
 	}
 }
+
+template <class T> static void update_min_max_numeric_segment_rle(T value, T *__restrict min, T *__restrict max) {
+	if (LessThan::Operation(value, *min)) {
+		*min = value;
+	}
+	if (GreaterThan::Operation(value, *max)) {
+		*max = value;
+	}
+}
+
 template <class T>
 static void rle_append_loop(SegmentStatistics &stats, data_ptr_t target, idx_t target_offset, Vector &source, idx_t offset,
                         idx_t count) {
@@ -51,7 +61,7 @@ static void rle_append_loop(SegmentStatistics &stats, data_ptr_t target, idx_t t
 				nullmask[target_idx] = true;
 				stats.has_null = true;
 			} else {
-				update_min_max_numeric_segment(sdata[source_idx], min, max);
+				update_min_max_numeric_segment_rle(sdata[source_idx], min, max);
 				tdata[target_idx] = sdata[source_idx];
 			}
 		}
@@ -68,7 +78,7 @@ static void rle_append_loop(SegmentStatistics &stats, data_ptr_t target, idx_t t
 				//! this is the first value
 				previous_value =  source_data;
 				runs = 1;
-				update_min_max_numeric_segment(sdata[source_idx], min, max);
+				update_min_max_numeric_segment_rle(sdata[source_idx], min, max);
 			}
 			else if (source_data != previous_value){
 				//! We need to output previous value and run
@@ -77,7 +87,7 @@ static void rle_append_loop(SegmentStatistics &stats, data_ptr_t target, idx_t t
                 target_idx++;
 				previous_value = source_data;
 				runs = 1;
-				update_min_max_numeric_segment(sdata[source_idx], min, max);
+				update_min_max_numeric_segment_rle(sdata[source_idx], min, max);
 			}
 			else{
 				runs++;
@@ -86,7 +96,7 @@ static void rle_append_loop(SegmentStatistics &stats, data_ptr_t target, idx_t t
 				//! We also must output in the last value
 				tdata_value[target_idx] = previous_value;
                 tdata_run[target_idx] = runs;
-				update_min_max_numeric_segment(sdata[source_idx], min, max);
+				update_min_max_numeric_segment_rle(sdata[source_idx], min, max);
 			}
 		}
 	}

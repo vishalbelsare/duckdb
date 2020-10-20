@@ -29,7 +29,7 @@ public:
 	idx_t type_size;
 
 	RLESegment(BufferManager &manager, PhysicalType type, idx_t row_start, block_id_t block = INVALID_BLOCK);
-
+	~RLESegment();
 	void InitializeScan(ColumnScanState &state) override {
 	}
 	//! Fetch the vector at index "vector_index" from the uncompressed segment, storing it in the result vector

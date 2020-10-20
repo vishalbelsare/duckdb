@@ -28,9 +28,9 @@ public:
 	      manager(manager), type(type),  block_id(INVALID_BLOCK),vector_size(0), max_vector_count(0), tuple_count(0), row_start(row_start),
       versions(nullptr) { }
 
-	~Segment() {
+	virtual ~Segment() {
 	if (block_id >= MAXIMUM_BLOCK) {
-		// if the  segment had an in-memory segment, destroy it when the segment is destroyed
+		//! if the segment had an in-memory segment, destroy it when the segment is destroyed
 		manager.DestroyBuffer(block_id);
 	}
 }
