@@ -25,6 +25,9 @@ struct UpdateInfo;
 //! An uncompressed segment represents an uncompressed segment of a column residing in a block
 class RLESegment: public Segment {
 public:
+	//! The size of this type
+	idx_t type_size;
+
 	RLESegment(BufferManager &manager, PhysicalType type, idx_t row_start, block_id_t block = INVALID_BLOCK);
 
 	void InitializeScan(ColumnScanState &state) override {

@@ -17,14 +17,28 @@ INSERT INTO integers VALUES (1), (1), (2), (3), (4),(4),(5)
 
 # test if data is there
 query I
-SELECT count(*) FROM integers;
+SELECT * FROM integers order by i;
 ----
-7
+1
+1
+2
+3
+4
+4
+5
+
+
 
 # verify that the tables are still there after a restart
 restart
 
 query I
-SELECT count(*) FROM integers;
+SELECT * FROM integers order by i;
 ----
-7
+1
+1
+2
+3
+4
+4
+5

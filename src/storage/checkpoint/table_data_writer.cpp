@@ -185,13 +185,11 @@ void TableDataWriter::VerifyDataPointers() {
 }
 
 void TableDataWriter::WriteDataPointers() {
-	for (idx_t i = 0; i < data_pointers.size(); i++) {
-		// get a reference to the data column
-		auto &data_pointer_list = data_pointers[i];
-		manager.tabledata_writer->Write<idx_t>(data_pointer_list.size());
-		// then write the data pointers themselves
-		for (idx_t k = 0; k < data_pointer_list.size(); k++) {
-			auto &data_pointer = data_pointer_list[k];
+	for (auto & data_pointer_list : data_pointers) {
+		//! get a reference to the data column
+			manager.tabledata_writer->Write<idx_t>(data_pointer_list.size());
+		//! then write the data pointers themselves
+		for (auto & data_pointer : data_pointer_list) {
 			manager.tabledata_writer->Write<double>(data_pointer.min);
 			manager.tabledata_writer->Write<double>(data_pointer.max);
 			manager.tabledata_writer->Write<idx_t>(data_pointer.row_start);
