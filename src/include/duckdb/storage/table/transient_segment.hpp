@@ -24,8 +24,8 @@ public:
 
 	//! The buffer manager
 	BufferManager &manager;
-	//! The uncompressed segment holding the data
-	unique_ptr<UncompressedSegment> data;
+	//! The segment holding the data
+	unique_ptr<Segment> data;
 
 public:
 	void InitializeScan(ColumnScanState &state) override;

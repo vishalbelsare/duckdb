@@ -1,28 +1,34 @@
 #include "duckdb/storage/table/persistent_segment.hpp"
+
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/types/null_value.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
-#include "duckdb/common/types/null_value.hpp"
 #include "duckdb/storage/checkpoint/table_data_writer.hpp"
 #include "duckdb/storage/meta_block_reader.hpp"
-
 #include "duckdb/storage/numeric_segment.hpp"
 #include "duckdb/storage/string_segment.hpp"
-
+#include "duckdb/storage/rle_segment.hpp"
 namespace duckdb {
 using namespace std;
 
 PersistentSegment::PersistentSegment(BufferManager &manager, block_id_t id, idx_t offset, PhysicalType type,
-                                     idx_t start, idx_t count, data_t stats_min[], data_t stats_max[])
+                                     idx_t start, idx_t count, data_t stats_min[], data_t stats_max[],
+                                     bool rle_compressed, idx_t compressed_tuple_count)
     : ColumnSegment(type, ColumnSegmentType::PERSISTENT, start, count, stats_min, stats_max), manager(manager),
       block_id(id), offset(offset) {
 	assert(offset == 0);
-	if (type == PhysicalType::VARCHAR) {
-		data = make_unique<StringSegment>(manager, start, id);
-		data->max_vector_count = count / STANDARD_VECTOR_SIZE + (count % STANDARD_VECTOR_SIZE == 0 ? 0 : 1);
+	if (rle_compressed) {
+        data = make_unique<RLESegment>(manager,type, start, id,compressed_tuple_count);
 	} else {
-		data = make_unique<NumericSegment>(manager, type, start, id);
+		if (type == PhysicalType::VARCHAR) {
+			data = make_unique<StringSegment>(manager, start, id);
+			data->max_vector_count = count / STANDARD_VECTOR_SIZE + (count % STANDARD_VECTOR_SIZE == 0 ? 0 : 1);
+		} else {
+			data = make_unique<NumericSegment>(manager, type, start, id);
+		}
 	}
+
 	data->tuple_count = count;
 }
 
@@ -31,7 +37,7 @@ void PersistentSegment::InitializeScan(ColumnScanState &state) {
 }
 
 void PersistentSegment::Scan(Transaction &transaction, ColumnScanState &state, idx_t vector_index, Vector &result) {
-	data->Scan(transaction, state, vector_index, result,true);
+	data->Scan(transaction, state, vector_index, result, true);
 }
 
 void PersistentSegment::FilterScan(Transaction &transaction, ColumnScanState &state, Vector &result,

@@ -11,6 +11,7 @@
 #include "duckdb/storage/string_segment.hpp"
 #include "duckdb/storage/table/column_segment.hpp"
 #include "duckdb/transaction/transaction.hpp"
+#include "duckdb/main/database.hpp"
 
 namespace duckdb {
 using namespace std;
@@ -129,31 +130,36 @@ void TableDataWriter::AppendData(Transaction &transaction, idx_t col_idx, Vector
 
 void TableDataWriter::FlushSegment(Transaction &transaction, idx_t col_idx) {
 	auto tuple_count = segments[col_idx]->tuple_count;
+	idx_t compressed_count {};
 	if (tuple_count == 0) {
 		return;
 	}
 
-	// get the buffer of the segment and pin it
+	//! get the buffer of the segment and pin it
 	auto handle = manager.buffer_manager.Pin(segments[col_idx]->block_id);
 
-	// get a free block id to write to
+	//! get a free block id to write to
 	auto block_id = manager.block_manager.GetFreeBlockId();
 
-	// construct the data pointer, FIXME: add statistics as well
+	//! construct the data pointer, FIXME: add statistics as well
 	DataPointer data_pointer;
 	data_pointer.block_id = block_id;
 	data_pointer.offset = 0;
 	data_pointer.row_start = 0;
-	if (data_pointers[col_idx].size() > 0) {
+	if (!data_pointers[col_idx].empty()) {
 		auto &last_pointer = data_pointers[col_idx].back();
 		data_pointer.row_start = last_pointer.row_start + last_pointer.tuple_count;
 	}
 	data_pointer.tuple_count = tuple_count;
+	if (manager.database.config.enable_rle){
+		compressed_count = static_cast<RLESegment*>(segments[col_idx].get())->comp_tpl_cnt;
+	}
+	data_pointer.compressed_count = compressed_count;
 	idx_t type_size = stats[col_idx]->type == PhysicalType::VARCHAR ? 8 : stats[col_idx]->type_size;
 	memcpy(&data_pointer.min_stats, stats[col_idx]->minimum.get(), type_size);
 	memcpy(&data_pointer.max_stats, stats[col_idx]->maximum.get(), type_size);
 	data_pointers[col_idx].push_back(move(data_pointer));
-	// write the block to disk
+	//! write the block to disk
 	manager.block_manager.Write(*handle->node, block_id);
 
 	handle.reset();
@@ -167,9 +173,8 @@ void TableDataWriter::VerifyDataPointers() {
 		auto &data_pointer_list = data_pointers[i];
 		idx_t column_count = 0;
 		// then write the data pointers themselves
-		for (idx_t k = 0; k < data_pointer_list.size(); k++) {
-			auto &data_pointer = data_pointer_list[k];
-			column_count += data_pointer.tuple_count;
+		for (auto & data_pointer : data_pointer_list) {
+				column_count += data_pointer.tuple_count;
 		}
 		if (segments[i]) {
 			column_count += segments[i]->tuple_count;
@@ -196,6 +201,7 @@ void TableDataWriter::WriteDataPointers() {
 			manager.tabledata_writer->Write<idx_t>(data_pointer.tuple_count);
 			manager.tabledata_writer->Write<block_id_t>(data_pointer.block_id);
 			manager.tabledata_writer->Write<uint32_t>(data_pointer.offset);
+			manager.tabledata_writer->Write<idx_t>(data_pointer.compressed_count);
 			manager.tabledata_writer->WriteData(data_pointer.min_stats, 16);
 			manager.tabledata_writer->WriteData(data_pointer.max_stats, 16);
 		}
@@ -231,7 +237,7 @@ void WriteOverflowStringsToDisk::WriteString(string_t string, block_id_t &result
 	auto strptr = string.GetData();
 	uint32_t remaining = string_length + 1;
 	while (remaining > 0) {
-		uint32_t to_write = MinValue<uint32_t>(remaining, STRING_SPACE - offset);
+		auto to_write = MinValue<uint32_t>(remaining, STRING_SPACE - offset);
 		if (to_write > 0) {
 			memcpy(handle->node->buffer + offset, strptr, to_write);
 

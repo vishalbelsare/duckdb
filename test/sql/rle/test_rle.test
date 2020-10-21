@@ -42,3 +42,26 @@ SELECT * FROM integers order by i;
 4
 4
 5
+
+#insert more stuff
+statement ok
+INSERT INTO integers VALUES (1), (1), (2), (3), (4),(4),(5)
+
+# test if data is there
+query I
+SELECT * FROM integers order by i;
+----
+1
+1
+1
+1
+2
+2
+3
+3
+4
+4
+4
+4
+5
+5

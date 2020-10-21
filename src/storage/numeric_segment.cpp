@@ -7,7 +7,6 @@
 #include "duckdb/transaction/transaction.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/storage/data_table.hpp"
-#include "duckdb/common/operator/comparison_operators.hpp"
 #include "duckdb/common/vector_size.hpp"
 
 using namespace std;

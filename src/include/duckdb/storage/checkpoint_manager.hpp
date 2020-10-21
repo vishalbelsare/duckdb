@@ -30,6 +30,8 @@ public:
 	uint64_t tuple_count;
 	block_id_t block_id;
 	uint32_t offset;
+	//! Number of compressed RLE tuples
+	uint64_t compressed_count;
 	//! The minimum value of the segment
 	data_t min_stats[16];
 	//! The maximum value of the segment

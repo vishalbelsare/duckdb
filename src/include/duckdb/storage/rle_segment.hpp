@@ -22,19 +22,20 @@ class Transaction;
 struct ColumnAppendState;
 struct UpdateInfo;
 
-//! An uncompressed segment represents an uncompressed segment of a column residing in a block
+//! A compressed RLE segment represents a RLE segment of a column residing in a block
 class RLESegment: public Segment {
 public:
 	//! The size of this type
 	idx_t type_size;
-
-	RLESegment(BufferManager &manager, PhysicalType type, idx_t row_start, block_id_t block = INVALID_BLOCK);
+	//! The current amount of compressed (i.e., value/runs) tuples in this segment
+	idx_t comp_tpl_cnt{};
+	RLESegment(BufferManager &manager, PhysicalType type, idx_t row_start, block_id_t block = INVALID_BLOCK, idx_t compressed_tuple_count = 0);
 	~RLESegment();
 	void InitializeScan(ColumnScanState &state) override {
 	}
 	//! Fetch the vector at index "vector_index" from the uncompressed segment, storing it in the result vector
 	void Scan(Transaction &transaction, ColumnScanState &state, idx_t vector_index, Vector &result,
-	          bool get_lock) override{};
+	          bool get_lock) override;
 	//! Scan the next vector from the column and apply a selection vector to filter the data
 	void FilterScan(Transaction &transaction, ColumnScanState &state, Vector &result, SelectionVector &sel,
 	                idx_t &approved_tuple_count) override{};
@@ -61,7 +62,7 @@ public:
 	//! temporary in-memory one
 	void ToTemporary() override{};
 
-		//! Fetch a single value and append it to the vector
+	//! Fetch a single value and append it to the vector
 	void FetchRow(ColumnFetchState &state, Transaction &transaction, row_t row_id, Vector &result,
 	              idx_t result_idx) override{};
 
@@ -73,7 +74,7 @@ public:
 	//! Rollback a previous update
 	void RollbackUpdate(UpdateInfo *info) override{};
 
-	typedef void (*append_function_t)(SegmentStatistics &stats, data_ptr_t target, idx_t target_offset, Vector &source,
+	typedef void (*append_function_t)(SegmentStatistics &stats, data_ptr_t target, idx_t& target_offset, Vector &source,
 	                                  idx_t offset, idx_t count);
 //	typedef void (*update_function_t)(SegmentStatistics &stats, UpdateInfo *info, data_ptr_t base_data, Vector &update);
 //	typedef void (*update_info_fetch_function_t)(Transaction &transaction, UpdateInfo *info, Vector &result);
@@ -104,12 +105,15 @@ protected:
 	};
 	void Verify(Transaction &transaction) override{};
 
-	void FetchBaseData(ColumnScanState &state, idx_t vector_index, Vector &result) override{};
+	void FetchBaseData(ColumnScanState &state, idx_t vector_index, Vector &result) override;
 	void FilterFetchBaseData(ColumnScanState &state, Vector &result, SelectionVector &sel,
 	                         idx_t &approved_tuple_count) override{};
 	void FetchUpdateData(ColumnScanState &state, Transaction &transaction, UpdateInfo *versions,
 	                     Vector &result) override{};
-
+	//! Get Append Function depending on data type
+	static append_function_t GetRLEAppendFunction(PhysicalType type);
+	//! Get Decompress Function depending on data type
+	static void DecompressRLE(data_ptr_t source, data_ptr_t target,PhysicalType type, idx_t count);
 };
 
 } // namespace duckdb
