@@ -61,13 +61,15 @@ public:
 	//! Scan the next vector from the column and apply a selection vector to filter the data
 	virtual void FilterScan(Transaction &transaction, ColumnScanState &state, Vector &result, SelectionVector &sel,
 	                idx_t &approved_tuple_count) = 0;
+	static void filterSelection(SelectionVector &sel, Vector &result, TableFilter filter, idx_t &approved_tuple_count,
+	                            nullmask_t &nullmask);
 	//! Fetch the vector at index "vector_index" from the  segment, throwing an exception if there are any
 	//! outstanding updates
-	virtual void IndexScan(ColumnScanState &state, idx_t vector_index, Vector &result) = 0;
+	void IndexScan(ColumnScanState &state, idx_t vector_index, Vector &result);
 
 	//! Executes the filters directly in the table's data
-	virtual void Select(Transaction &transaction, Vector &result, vector<TableFilter> &tableFilters, SelectionVector &sel,
-	            idx_t &approved_tuple_count, ColumnScanState &state) = 0;
+	void Select(Transaction &transaction, Vector &result, vector<TableFilter> &tableFilters, SelectionVector &sel,
+	            idx_t &approved_tuple_count, ColumnScanState &state);
 	//! Fetch a single vector from the base table
 	virtual void Fetch(ColumnScanState &state, idx_t vector_index, Vector &result) = 0;
 	//! Fetch a single value and append it to the vector
@@ -80,8 +82,8 @@ public:
 	virtual idx_t Append(SegmentStatistics &stats, Vector &data, idx_t offset, idx_t count) = 0;
 
 	//! Update a set of row identifiers to the specified set of updated values
-	virtual void Update(ColumnData &data, SegmentStatistics &stats, Transaction &transaction, Vector &update, row_t *ids,
-	            idx_t count, row_t offset) = 0;
+	void Update(ColumnData &data, SegmentStatistics &stats, Transaction &transaction, Vector &update, row_t *ids,
+	            idx_t count, row_t offset);
 
 	//! Rollback a previous update
 	virtual void RollbackUpdate(UpdateInfo *info) = 0;
@@ -91,7 +93,7 @@ public:
 
 	//! Convert a persistently backed segment (i.e. one where block_id refers to an on-disk block) to a
 	//! temporary in-memory one
-	virtual void ToTemporary() = 0;
+	virtual void ToTemporary();
 
 	//! Get the amount of tuples in a vector
 	idx_t GetVectorCount(idx_t vector_index) const {
@@ -118,8 +120,8 @@ protected:
 	                             Vector &result) = 0;
 
 	//! Create a new update info for the specified transaction reflecting an update of the specified rows
-	virtual UpdateInfo *CreateUpdateInfo(ColumnData &data, Transaction &transaction, row_t *ids, idx_t count,
-	                             idx_t vector_index, idx_t vector_offset, idx_t type_size) = 0;
+	UpdateInfo *CreateUpdateInfo(ColumnData &data, Transaction &transaction, row_t *ids, idx_t count,
+	                             idx_t vector_index, idx_t vector_offset, idx_t type_size);
 };
 
 } // namespace duckdb

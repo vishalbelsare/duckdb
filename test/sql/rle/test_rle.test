@@ -47,7 +47,7 @@ SELECT * FROM integers order by i;
 statement ok
 INSERT INTO integers VALUES (1), (1), (2), (3), (4),(4),(5)
 
-# test if data is there
+# test data
 query I
 SELECT * FROM integers order by i;
 ----
@@ -65,3 +65,11 @@ SELECT * FROM integers order by i;
 4
 5
 5
+
+# test filters in compressed segment
+query I
+SELECT * FROM integers where i = 3;
+----
+3
+3
+

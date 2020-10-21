@@ -18,8 +18,8 @@ class UncompressedSegment;
 struct UpdateInfo {
 	//! The base ColumnData that this update affects
 	ColumnData *column_data;
-	//! The uncompressed segment that this update info affects
-	UncompressedSegment *segment;
+	//! The segment that this update info affects
+	Segment *segment;
 	//! The version number
 	transaction_t version_number;
 	//! The vector index within the uncompressed segment
