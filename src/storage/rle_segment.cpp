@@ -65,8 +65,8 @@ void Select_RLE(SelectionVector &sel, Vector &result, unsigned char *source, nul
 		//			}
 		//		}
 	} else {
-		auto src_value = (T *)(source + sizeof(nullmask_t));
-		auto src_run = (uint32_t *)(source + sizeof(nullmask_t) + (sizeof(T) + STANDARD_VECTOR_SIZE));
+		auto src_value = (T *)(source);
+		auto src_run = (uint32_t *)(source + (sizeof(T) * STANDARD_VECTOR_SIZE));
 		idx_t compressed_idx{};
 		idx_t cur_tuple{};
 		idx_t decompressed_idx{};
@@ -325,14 +325,14 @@ template <class T> static void update_min_max_numeric_segment_rle(T value, T *__
 template <class T>
 static void rle_append_loop(SegmentStatistics &stats, data_ptr_t target, idx_t &target_offset, Vector &source,
                             idx_t offset, idx_t count) {
-	auto &nullmask = *((nullmask_t *)target);
+//	auto &nullmask = *((nullmask_t *)target);
 	auto min = (T *)stats.minimum.get();
 	auto max = (T *)stats.maximum.get();
 	VectorData adata{};
 	source.Orrify(count, adata);
 
 	auto sdata = (T *)adata.data;
-	auto tdata = (T *)(target + sizeof(nullmask_t));
+//	auto tdata = (T *)(target + sizeof(nullmask_t));
 	if (adata.nullmask->any()) {
 		assert(0);
 		//		for (idx_t i = 0; i < count; i++) {
@@ -351,7 +351,7 @@ static void rle_append_loop(SegmentStatistics &stats, data_ptr_t target, idx_t &
 		T previous_value{};
 		uint32_t runs{};
 		auto tdata_value = (T *)(target + sizeof(nullmask_t));
-		auto tdata_run = (uint32_t *)(target + sizeof(nullmask_t) + (sizeof(T) + STANDARD_VECTOR_SIZE));
+		auto tdata_run = (uint32_t *)(target + sizeof(nullmask_t) + (sizeof(T) * STANDARD_VECTOR_SIZE));
 		for (idx_t i = 0; i < count; i++) {
 			auto source_idx = adata.sel->get_index(offset + i);
 			auto source_data = sdata[source_idx];
@@ -382,7 +382,7 @@ static void rle_append_loop(SegmentStatistics &stats, data_ptr_t target, idx_t &
 
 template <class T> static void rle_decompress(data_ptr_t source, data_ptr_t target, idx_t count) {
 	auto src_value = (T *)(source + sizeof(nullmask_t));
-	auto src_run = (uint32_t *)(source + sizeof(nullmask_t) + (sizeof(T) + STANDARD_VECTOR_SIZE));
+	auto src_run = (uint32_t *)(source + sizeof(nullmask_t) + (sizeof(T) * STANDARD_VECTOR_SIZE));
 	auto tgt_value = (T *)(target);
 	idx_t tuple_count{};
 	idx_t src_idx{};
