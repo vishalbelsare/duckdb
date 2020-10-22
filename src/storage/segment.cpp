@@ -1,5 +1,7 @@
 #include "duckdb/storage/segment.hpp"
 
+using namespace duckdb;
+
 static void CheckForConflicts(UpdateInfo *info, Transaction &transaction, row_t *ids, idx_t count, row_t offset,
                               UpdateInfo *&node) {
 	if (info->version_number == transaction.transaction_id) {

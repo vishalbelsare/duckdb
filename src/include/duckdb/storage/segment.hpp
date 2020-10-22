@@ -12,7 +12,7 @@
 #include "duckdb/storage/block.hpp"
 #include "duckdb/storage/storage_lock.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
-
+#include "duckdb/common/constants.hpp"
 namespace duckdb {
 class BufferManager;
 class ColumnData;
