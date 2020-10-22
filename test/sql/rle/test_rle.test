@@ -73,3 +73,12 @@ SELECT * FROM integers where i = 3;
 3
 3
 
+query I
+SELECT * FROM integers where i >= 3 and i <5 order by i;
+----
+3
+3
+4
+4
+4
+4

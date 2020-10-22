@@ -1,4 +1,7 @@
 #include "duckdb/storage/segment.hpp"
+#include "duckdb/transaction/update_info.hpp"
+#include "duckdb/transaction/transaction.hpp"
+#include "duckdb/common/constants.hpp"
 
 using namespace duckdb;
 

@@ -96,21 +96,32 @@ void Select_RLE(SelectionVector &sel, Vector &result, unsigned char *source, nul
 	SelectionVector new_sel(approved_tuple_count);
 	idx_t result_count = 0;
 	if (source_nullmask->any()) {
-		for (idx_t i = 0; i < approved_tuple_count; i++) {
-			idx_t src_idx = sel.get_index(i);
-			if (!(*source_nullmask)[src_idx] && OPL::Operation(((T *)source)[src_idx], constantLeft) &&
-			    OPR::Operation(((T *)source)[src_idx], constantRight)) {
-				((T *)result_data)[src_idx] = ((T *)source)[src_idx];
-				new_sel.set_index(result_count++, src_idx);
-			}
-		}
+		assert(0);
+//		for (idx_t i = 0; i < approved_tuple_count; i++) {
+//			idx_t src_idx = sel.get_index(i);
+//			if (!(*source_nullmask)[src_idx] && OPL::Operation(((T *)source)[src_idx], constantLeft) &&
+//			    OPR::Operation(((T *)source)[src_idx], constantRight)) {
+//				((T *)result_data)[src_idx] = ((T *)source)[src_idx];
+//				new_sel.set_index(result_count++, src_idx);
+//			}
+//		}
 	} else {
-		for (idx_t i = 0; i < approved_tuple_count; i++) {
-			idx_t src_idx = sel.get_index(i);
-			if (OPL::Operation(((T *)source)[src_idx], constantLeft) &&
-			    OPR::Operation(((T *)source)[src_idx], constantRight)) {
-				((T *)result_data)[src_idx] = ((T *)source)[src_idx];
-				new_sel.set_index(result_count++, src_idx);
+		auto src_value = (T *)(source);
+		auto src_run = (uint32_t *)(source + (sizeof(T) * STANDARD_VECTOR_SIZE));
+		idx_t compressed_idx{};
+		idx_t cur_tuple{};
+		idx_t decompressed_idx{};
+		while (cur_tuple < approved_tuple_count) {
+			idx_t src_dec_idx = sel.get_index(cur_tuple);
+			if (decompressed_idx <= src_dec_idx && src_dec_idx < decompressed_idx + src_run[compressed_idx]) {
+				if (OPL::Operation(src_value[compressed_idx], constantLeft) && OPR::Operation(src_value[compressed_idx],constantRight)) {
+					((T *)result_data)[cur_tuple] = src_value[compressed_idx];
+					new_sel.set_index(result_count++, cur_tuple);
+				}
+				cur_tuple++;
+			} else {
+				decompressed_idx+=src_run[compressed_idx];
+				compressed_idx++;
 			}
 		}
 	}
