@@ -30,11 +30,7 @@ void UncompressedSegment::Verify(Transaction &transaction) {
 #endif
 }
 
-void UncompressedSegment::Fetch(ColumnScanState &state, idx_t vector_index, Vector &result) {
-	auto read_lock = lock.GetSharedLock();
-	InitializeScan(state);
-	FetchBaseData(state, vector_index, result);
-}
+
 
 
 //===--------------------------------------------------------------------===//
@@ -68,24 +64,6 @@ void UncompressedSegment::FilterScan(Transaction &transaction, ColumnScanState &
 
 
 
-//===--------------------------------------------------------------------===//
-// Update
-//===--------------------------------------------------------------------===//
-void UncompressedSegment::CleanupUpdate(UpdateInfo *info) {
-	if (info->prev) {
-		// there is a prev info: remove from the chain
-		auto prev = info->prev;
-		prev->next = info->next;
-		if (prev->next) {
-			prev->next->prev = prev;
-		}
-	} else {
-		// there is no prev info: remove from base segment
-		info->segment->versions[info->vector_index] = info->next;
-		if (info->next) {
-			info->next->prev = nullptr;
-		}
-	}
-}
+
 
 } // namespace duckdb

@@ -46,15 +46,6 @@ public:
 	    assert(0);
 	};
 
-	//! Fetch a single vector from the base table
-	void Fetch(ColumnScanState &state, idx_t vector_index, Vector &result) override{
-	    assert(0);
-	};
-
-	//! Cleanup an update, removing it from the version chain. This should only be called if an exclusive lock is held
-	//! on the segment
-	void CleanupUpdate(UpdateInfo *info) override{};
-
 	//! Fetch a single value and append it to the vector
 	void FetchRow(ColumnFetchState &state, Transaction &transaction, row_t row_id, Vector &result,
 	              idx_t result_idx) override{
@@ -74,7 +65,7 @@ public:
 	typedef void (*append_function_t)(SegmentStatistics &stats, data_ptr_t target, idx_t& target_offset, Vector &source,
 	                                  idx_t offset, idx_t count);
 	typedef void (*update_function_t)(SegmentStatistics &stats, UpdateInfo *info, data_ptr_t base_data, Vector &update);
-//	typedef void (*update_info_fetch_function_t)(Transaction &transaction, UpdateInfo *info, Vector &result);
+	typedef void (*update_info_fetch_function_t)(Transaction &transaction, UpdateInfo *info, Vector &result);
 //	typedef void (*update_info_append_function_t)(Transaction &transaction, UpdateInfo *info, idx_t idx, Vector &result,
 //	                                              idx_t result_idx);
 //	typedef void (*rollback_update_function_t)(UpdateInfo *info, data_ptr_t base_data);
@@ -84,7 +75,7 @@ public:
 private:
 	append_function_t append_function;
 	update_function_t update_function;
-//	update_info_fetch_function_t fetch_from_update_info;
+	update_info_fetch_function_t fetch_from_update_info;
 //	update_info_append_function_t append_from_update_info;
 //	rollback_update_function_t rollback_update;
 	merge_update_function_t merge_update_function;
@@ -105,13 +96,16 @@ protected:
 	    assert(0);
 	};
 	void FetchUpdateData(ColumnScanState &state, Transaction &transaction, UpdateInfo *versions,
-	                     Vector &result) override{
-	    assert(0);
-	};
+	                     Vector &result) override;
 	//! Get Append Function depending on data type
 	static append_function_t GetRLEAppendFunction(PhysicalType type);
+	//! Get Update Function depending on the data type
+	static update_function_t GetUpdateFunction(PhysicalType type);
+	//! Get Update Info Fetch Function depending on the data type
+	static update_info_fetch_function_t GetUpdateInfoFetchFunction(PhysicalType type);
 	//! Get Decompress Function depending on data type
-	static void DecompressRLE(data_ptr_t source, data_ptr_t target,PhysicalType type, idx_t count);
+	static void DecompressRLE(data_ptr_t source,  Vector & target,PhysicalType type, idx_t count);
+
 };
 
 } // namespace duckdb

@@ -38,13 +38,6 @@ public:
 	void FilterScan(Transaction &transaction, ColumnScanState &state, Vector &result, SelectionVector &sel,
 	                idx_t &approved_tuple_count) override;
 
-	//! Fetch a single vector from the base table
-	void Fetch(ColumnScanState &state, idx_t vector_index, Vector &result) override;
-
-	//! Cleanup an update, removing it from the version chain. This should only be called if an exclusive lock is held
-	//! on the segment
-	void CleanupUpdate(UpdateInfo *info) override;
-
 protected:
 	void Update(ColumnData &data, SegmentStatistics &stats, Transaction &transaction, Vector &update,
 	                    row_t *ids, idx_t count, idx_t vector_index, idx_t vector_offset, UpdateInfo *node) override = 0;

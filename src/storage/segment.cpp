@@ -37,6 +37,25 @@ static void CheckForConflicts(UpdateInfo *info, Transaction &transaction, row_t 
 		CheckForConflicts(info->next, transaction, ids, count, offset, node);
 	}
 }
+//===--------------------------------------------------------------------===//
+// Update
+//===--------------------------------------------------------------------===//
+void Segment::CleanupUpdate(UpdateInfo *info) {
+	if (info->prev) {
+		//! there is a prev info: remove from the chain
+		auto prev = info->prev;
+		prev->next = info->next;
+		if (prev->next) {
+			prev->next->prev = prev;
+		}
+	} else {
+		//! there is no prev info: remove from base segment
+		info->segment->versions[info->vector_index] = info->next;
+		if (info->next) {
+			info->next->prev = nullptr;
+		}
+	}
+}
 
 void Segment::Update(ColumnData &column_data, SegmentStatistics &stats, Transaction &transaction,
                                  Vector &update, row_t *ids, idx_t count, row_t offset) {
@@ -275,7 +294,11 @@ void Segment::filterSelection(SelectionVector &sel, Vector &result, TableFilter 
 		throw InvalidTypeException(result.type, "Invalid type for filter pushed down to table comparison");
 	}
 }
-
+void Segment::Fetch(ColumnScanState &state, idx_t vector_index, Vector &result) {
+	auto read_lock = lock.GetSharedLock();
+	InitializeScan(state);
+	FetchBaseData(state, vector_index, result);
+}
 
 void Segment::Select(Transaction &transaction, Vector &result, vector<TableFilter> &tableFilters,
                                  SelectionVector &sel, idx_t &approved_tuple_count, ColumnScanState &state) {

@@ -71,7 +71,7 @@ public:
 	void Select(Transaction &transaction, Vector &result, vector<TableFilter> &tableFilters, SelectionVector &sel,
 	            idx_t &approved_tuple_count, ColumnScanState &state);
 	//! Fetch a single vector from the base table
-	virtual void Fetch(ColumnScanState &state, idx_t vector_index, Vector &result) = 0;
+	void Fetch(ColumnScanState &state, idx_t vector_index, Vector &result);
 	//! Fetch a single value and append it to the vector
 	virtual void FetchRow(ColumnFetchState &state, Transaction &transaction, row_t row_id, Vector &result,
 	                      idx_t result_idx) = 0;
@@ -89,7 +89,7 @@ public:
 	virtual void RollbackUpdate(UpdateInfo *info) = 0;
 	//! Cleanup an update, removing it from the version chain. This should only be called if an exclusive lock is held
 	//! on the segment
-	virtual void CleanupUpdate(UpdateInfo *info) = 0;
+	void CleanupUpdate(UpdateInfo *info);
 
 	//! Convert a persistently backed segment (i.e. one where block_id refers to an on-disk block) to a
 	//! temporary in-memory one
