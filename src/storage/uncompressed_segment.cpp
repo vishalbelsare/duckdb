@@ -50,17 +50,7 @@ void UncompressedSegment::Scan(Transaction &transaction, ColumnScanState &state,
 	}
 }
 
-void UncompressedSegment::FilterScan(Transaction &transaction, ColumnScanState &state, Vector &result,
-                                     SelectionVector &sel, idx_t &approved_tuple_count) {
-	auto read_lock = lock.GetSharedLock();
-	if (versions && versions[state.vector_index]) {
-		// if there are any versions, we do a regular scan
-		Scan(transaction, state, state.vector_index, result, false);
-		result.Slice(sel, approved_tuple_count);
-	} else {
-		FilterFetchBaseData(state, result, sel, approved_tuple_count);
-	}
-}
+
 
 
 

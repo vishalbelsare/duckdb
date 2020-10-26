@@ -36,11 +36,7 @@ public:
 	//! Fetch the vector at index "vector_index" from the uncompressed segment, storing it in the result vector
 	void Scan(Transaction &transaction, ColumnScanState &state, idx_t vector_index, Vector &result,
 	          bool get_lock) override;
-	//! Scan the next vector from the column and apply a selection vector to filter the data
-	void FilterScan(Transaction &transaction, ColumnScanState &state, Vector &result, SelectionVector &sel,
-	                idx_t &approved_tuple_count) override{
-	    assert(0);
-	};
+
 	static void filterSelection(SelectionVector &sel, Vector &result, const TableFilter& filter, idx_t &approved_tuple_count,
 	                            nullmask_t &nullmask){
 	    assert(0);
@@ -92,9 +88,7 @@ protected:
 
 	void FetchBaseData(ColumnScanState &state, idx_t vector_index, Vector &result) override;
 	void FilterFetchBaseData(ColumnScanState &state, Vector &result, SelectionVector &sel,
-	                         idx_t &approved_tuple_count) override{
-	    assert(0);
-	};
+	                         idx_t &approved_tuple_count) override;
 	void FetchUpdateData(ColumnScanState &state, Transaction &transaction, UpdateInfo *versions,
 	                     Vector &result) override;
 	//! Get Append Function depending on data type
@@ -104,7 +98,7 @@ protected:
 	//! Get Update Info Fetch Function depending on the data type
 	static update_info_fetch_function_t GetUpdateInfoFetchFunction(PhysicalType type);
 	//! Get Decompress Function depending on data type
-	static void DecompressRLE(data_ptr_t source,  Vector & target,PhysicalType type, idx_t count);
+	static void DecompressRLE(data_ptr_t source, nullmask_t * source_nullmask,  Vector & target,PhysicalType type, idx_t count);
 
 };
 

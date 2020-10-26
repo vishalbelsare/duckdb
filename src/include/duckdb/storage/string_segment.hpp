@@ -56,6 +56,7 @@ public:
 	//! FIXME: this should be replaced by a heap that also allows freeing of unused strings
 	unique_ptr<StringBlock> head;
 	//! Blocks that hold string updates (if any)
+	// this guy
 	unique_ptr<string_update_info_t[]> string_updates;
 	//! Overflow string writer (if any), if not set overflow strings will be written to memory blocks
 	unique_ptr<OverflowStringWriter> overflow_writer;

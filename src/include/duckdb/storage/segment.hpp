@@ -59,8 +59,8 @@ public:
 	 //! Fetch the vector at index "vector_index" from the  segment, storing it in the result vector
 	virtual void Scan(Transaction &transaction, ColumnScanState &state, idx_t vector_index, Vector &result, bool get_lock) = 0;
 	//! Scan the next vector from the column and apply a selection vector to filter the data
-	virtual void FilterScan(Transaction &transaction, ColumnScanState &state, Vector &result, SelectionVector &sel,
-	                idx_t &approved_tuple_count) = 0;
+	void FilterScan(Transaction &transaction, ColumnScanState &state, Vector &result, SelectionVector &sel,
+	                idx_t &approved_tuple_count);
 	static void filterSelection(SelectionVector &sel, Vector &result, TableFilter filter, idx_t &approved_tuple_count,
 	                            nullmask_t &nullmask);
 	//! Fetch the vector at index "vector_index" from the  segment, throwing an exception if there are any

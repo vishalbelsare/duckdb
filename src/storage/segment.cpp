@@ -230,7 +230,17 @@ static void filterSelectionType(T *vec, T *predicate, SelectionVector &sel, idx_
 	}
 	sel.Initialize(new_sel);
 }
-
+void Segment::FilterScan(Transaction &transaction, ColumnScanState &state, Vector &result,
+                                     SelectionVector &sel, idx_t &approved_tuple_count) {
+	auto read_lock = lock.GetSharedLock();
+	if (versions && versions[state.vector_index]) {
+		// if there are any versions, we do a regular scan
+		Scan(transaction, state, state.vector_index, result, false);
+		result.Slice(sel, approved_tuple_count);
+	} else {
+		FilterFetchBaseData(state, result, sel, approved_tuple_count);
+	}
+}
 void Segment::filterSelection(SelectionVector &sel, Vector &result, TableFilter filter,
                                           idx_t &approved_tuple_count, nullmask_t &nullmask) {
 	// the inplace loops take the result as the last parameter
