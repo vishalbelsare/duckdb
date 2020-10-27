@@ -23,6 +23,7 @@ add_library_unity(duckdb_storage
                   storage_lock.cpp
                   wal_replay.cpp
                   rle_segment.cpp
+                  delta_update.cpp
                   segment.cpp)
 
 set(ALL_OBJECT_FILES

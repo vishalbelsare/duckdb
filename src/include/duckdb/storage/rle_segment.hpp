@@ -8,11 +8,12 @@
 
 #pragma once
 
-#include "duckdb/storage/table/column_segment.hpp"
+#include "delta_update.hpp"
 #include "duckdb/storage/block.hpp"
-#include "duckdb/storage/storage_lock.hpp"
-#include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/storage/segment.hpp"
+#include "duckdb/storage/storage_lock.hpp"
+#include "duckdb/storage/table/column_segment.hpp"
+#include "duckdb/storage/table/scan_state.hpp"
 
 namespace duckdb {
 class BufferManager;
@@ -29,6 +30,8 @@ public:
 	idx_t type_size;
 	//! The current amount of compressed (i.e., value/runs) tuples in this segment
 	idx_t comp_tpl_cnt{};
+	//! Blocks that hold delta updates
+	SegmentDeltaUpdates delta_updates;
 	RLESegment(BufferManager &manager, PhysicalType type, idx_t row_start, block_id_t block = INVALID_BLOCK, idx_t compressed_tuple_count = 0);
 	~RLESegment() override;
 	void InitializeScan(ColumnScanState &state) override {
@@ -85,7 +88,8 @@ protected:
 	void Verify(Transaction &transaction) override{
 	    assert(0);
 	};
-
+//    void FetchValueLocations(data_ptr_t baseptr, row_t *ids, idx_t vector_index, idx_t vector_offset,
+//                                         idx_t count, rle_location_t result[]);
 	void FetchBaseData(ColumnScanState &state, idx_t vector_index, Vector &result) override;
 	void FilterFetchBaseData(ColumnScanState &state, Vector &result, SelectionVector &sel,
 	                         idx_t &approved_tuple_count) override;
@@ -98,7 +102,7 @@ protected:
 	//! Get Update Info Fetch Function depending on the data type
 	static update_info_fetch_function_t GetUpdateInfoFetchFunction(PhysicalType type);
 	//! Get Decompress Function depending on data type
-	static void DecompressRLE(data_ptr_t source, nullmask_t * source_nullmask,  Vector & target,PhysicalType type, idx_t count);
+	void DecompressRLE(data_ptr_t source, nullmask_t * source_nullmask,  Vector & target,PhysicalType type, idx_t count, idx_t vector_index);
 
 };
 

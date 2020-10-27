@@ -3,6 +3,7 @@
 #include "duckdb/common/operator/comparison_operators.hpp"
 using namespace duckdb;
 
+template <class T> static void update_min_max_numeric_segment_rle(T value, T *__restrict min, T *__restrict max);
 RLESegment::~RLESegment() = default;
 RLESegment::RLESegment(BufferManager &manager, PhysicalType type, idx_t row_start, block_id_t block,
                        idx_t compressed_tuple_count)
@@ -426,22 +427,132 @@ RLESegment::update_function_t RLESegment::GetUpdateFunction(PhysicalType type) {
 		throw NotImplementedException("Unimplemented type for RLE segment Update Function");
 	}
 }
+//===--------------------------------------------------------------------===//
+// Fetch Values
+//===--------------------------------------------------------------------===//
+// void RLESegment::FetchValueLocations(data_ptr_t baseptr, row_t *ids, idx_t vector_index, idx_t vector_offset,
+//                                         idx_t count, rle_location_t result[]) {
+//	auto base = baseptr + vector_index * vector_size;
+//	auto base_data = (int32_t *)(base + sizeof(nullmask_t));
+//
+//	if (rle_updates && rle_updates[vector_index]) {
+//		//! there are updates: merge them in
+//		auto &info = *rle_updates[vector_index];
+//		idx_t update_idx = 0;
+//		for (idx_t i = 0; i < count; i++) {
+//			auto id = ids[i] - vector_offset;
+//			while (update_idx < info.count && info.ids[update_idx] < id) {
+//				update_idx++;
+//			}
+//			if (update_idx < info.count && info.ids[update_idx] == id) {
+//				//! use update info
+//				result[i].block_id = info.block_ids[update_idx];
+//				result[i].offset = info.offsets[update_idx];
+//				update_idx++;
+//			} else {
+//				//! use base table info
+//				result[i].offset = base_data[id];
+////				result[i] = FetchStringLocation(baseptr, base_data[id]);
+//			}
+//		}
+//	} else {
+//		//! no updates: fetch RLE from base vector
+//		for (idx_t i = 0; i < count; i++) {
+//			auto id = ids[i] - vector_offset;
+//			result[i].offset = base_data[id];
+////			result[i] = FetchStringLocation(baseptr, base_data[id]);
+//		}
+//	}
+//}
 
-void RLESegment::Update(ColumnData &data, SegmentStatistics &stats, Transaction &transaction, Vector &update,
+// string_location_t RLESegment::FetchValueLocation(data_ptr_t baseptr, int32_t dict_offset) {
+//	if (dict_offset == 0) {
+//		return string_location_t(INVALID_BLOCK, 0);
+//	}
+//	// look up result in dictionary
+//	auto dict_end = baseptr + Storage::BLOCK_SIZE;
+//	auto dict_pos = dict_end - dict_offset;
+//	auto string_length = Load<uint16_t>(dict_pos);
+//	string_location_t result;
+//	if (string_length == BIG_STRING_MARKER) {
+//		ReadStringMarker(dict_pos, result.block_id, result.offset);
+//	} else {
+//		result.block_id = INVALID_BLOCK;
+//		result.offset = dict_offset;
+//	}
+//	return result;
+//}
+
+// string_t StringSegment::FetchStringFromDict(buffer_handle_set_t &handles, data_ptr_t baseptr, int32_t dict_offset) {
+//	// fetch base data
+//	assert(dict_offset <= Storage::BLOCK_SIZE);
+//	string_location_t location = FetchStringLocation(baseptr, dict_offset);
+//	return FetchString(handles, baseptr, location);
+//}
+//
+// string_t StringSegment::FetchString(buffer_handle_set_t &handles, data_ptr_t baseptr, string_location_t location) {
+//	if (location.block_id != INVALID_BLOCK) {
+//		// big string marker: read from separate block
+//		return ReadString(handles, location.block_id, location.offset);
+//	} else {
+//		if (location.offset == 0) {
+//			return string_t(nullptr, 0);
+//		}
+//		// normal string: read string from this block
+//		auto dict_end = baseptr + Storage::BLOCK_SIZE;
+//		auto dict_pos = dict_end - location.offset;
+//		auto string_length = Load<uint16_t>(dict_pos);
+//
+//		auto str_ptr = (char *)(dict_pos + sizeof(uint16_t));
+//		return string_t(str_ptr, string_length);
+//	}
+//}
+
+//===--------------------------------------------------------------------===//
+// Update
+//===--------------------------------------------------------------------===//
+void RLESegment::Update(ColumnData &column_data, SegmentStatistics &stats, Transaction &transaction, Vector &update,
                         row_t *ids, idx_t count, idx_t vector_index, idx_t vector_offset, UpdateInfo *node) {
-	if (!node) {
-		auto handle = manager.Pin(block_id);
-		//! create a new node in the undo buffer for this update
-		node = CreateUpdateInfo(data, transaction, ids, count, vector_index, vector_offset, type_size);
-		//! now move the original data into the UpdateInfo
-		update_function(stats, node, handle->node->buffer + vector_index * vector_size, update);
-	} else {
-		//! node already exists for this transaction, we need to merge the new updates with the existing updates
-		auto handle = manager.Pin(block_id);
+	//! first pin the base block
+	auto handle = manager.Pin(block_id);
+	auto baseptr = handle->node->buffer;
+	auto base = baseptr + vector_index * vector_size;
+	auto &base_nullmask = *((nullmask_t *)base);
 
-		merge_update_function(stats, node, handle->node->buffer + vector_index * vector_size, update, ids, count,
-		                      vector_offset);
+	if (!delta_updates.is_initialized()) {
+		//! We must initialize our delta updates
+		delta_updates.initialize(max_vector_count, type);
+		delta_updates.insert_update(stats, update, ids, count, vector_offset, vector_index);
 	}
+	//	else {
+	//		// string updates already exist, merge the string updates together
+	//		new_update_info = MergeStringUpdate(stats, update, ids, count, vector_offset,
+	//*string_updates[vector_index]);
+	//	}
+	//
+	//	// now update the original nullmask
+	//	auto &update_nullmask = FlatVector::Nullmask(update);
+	//	for (idx_t i = 0; i < count; i++) {
+	//		base_nullmask[ids[i] - vector_offset] = update_nullmask[i];
+	//	}
+	//
+	//	// now that the original strings are placed in the undo buffer and the updated strings are placed in the base
+	// table
+	//	// create the update node
+	//	if (!node) {
+	//		// create a new node in the undo buffer for this update
+	//		node = CreateUpdateInfo(column_data, transaction, ids, count, vector_index, vector_offset,
+	//		                        sizeof(string_location_t));
+	//
+	//		// copy the string location data into the undo buffer
+	//		node->nullmask = original_nullmask;
+	//		memcpy(node->tuple_data, string_locations, sizeof(string_location_t) * count);
+	//	} else {
+	//		// node in the update info already exists, merge the new updates in
+	//		MergeUpdateInfo(node, ids, count, vector_offset, string_locations, original_nullmask);
+	//	}
+	//	// finally move the string updates in place
+	//	string_updates[vector_index] = move(new_update_info);
 }
 
 void RLESegment::FetchUpdateData(ColumnScanState &state, Transaction &transaction, UpdateInfo *version,
@@ -464,7 +575,7 @@ void RLESegment::FetchBaseData(ColumnScanState &state, idx_t vector_index, Vecto
 	//! fetch the nullmask and uncompress the data from the base table
 	result.vector_type = VectorType::FLAT_VECTOR;
 	FlatVector::SetNullmask(result, *source_nullmask);
-	DecompressRLE(data, source_nullmask, result, type, count);
+	DecompressRLE(data, source_nullmask, result, type, count, vector_index);
 }
 
 template <class T> static void update_min_max_numeric_segment_rle(T value, T *__restrict min, T *__restrict max) {
@@ -537,65 +648,103 @@ static void rle_append_loop(SegmentStatistics &stats, data_ptr_t target, idx_t &
 	}
 }
 
+// if (string_updates && string_updates[vector_index]) {
+//		// there are updates: merge them in
+//		auto &info = *string_updates[vector_index];
+//		idx_t update_idx = 0;
+//		for (idx_t i = 0; i < count; i++) {
+//			if (update_idx < info.count && info.ids[update_idx] == i) {
+//				// use update info
+//				result_data[i] = ReadString(state.handles, info.block_ids[update_idx], info.offsets[update_idx]);
+//				update_idx++;
+//			} else {
+//				// use base table info
+//				result_data[i] = FetchStringFromDict(state.handles, baseptr, base_data[i]);
+//			}
+//		}
+//	}
+
 template <class T>
-static void rle_decompress(data_ptr_t source, nullmask_t *source_nullmask, Vector &target, idx_t count) {
+static void rle_decompress(data_ptr_t source, nullmask_t *source_nullmask, Vector &target, idx_t count,
+                           SegmentDeltaUpdates &delta_updates, idx_t vector_index) {
 	auto target_data = FlatVector::GetData(target);
 	auto &target_mask = FlatVector::Nullmask(target);
-	SelectionVector new_sel(count);
 	auto src_value = (T *)(source + sizeof(nullmask_t));
 	auto src_run = (uint32_t *)(source + sizeof(nullmask_t) + (sizeof(T) * STANDARD_VECTOR_SIZE));
 	auto tgt_value = (T *)(target_data);
-	idx_t tuple_count{};
-	idx_t src_idx{};
-
-	if (source_nullmask->any()) {
-		while (tuple_count < count) {
-			for (idx_t i{}; i < src_run[src_idx]; i++) {
-				if ((*source_nullmask)[src_idx]) {
-					target_mask[tuple_count].flip();
+	idx_t compressed_idx{};
+	idx_t uncompressed_idx{};
+	if (delta_updates.is_initialized() && delta_updates.delta_updates[vector_index]) {
+		//! There are updates we must merge them in
+		auto update_count = delta_updates.delta_updates[vector_index]->count;
+		sel_t *update_ids = delta_updates.delta_updates[vector_index]->ids;
+		T *update_data = (T *)delta_updates.delta_updates[vector_index]->values.get();
+		nullmask_t *update_nullmask = &delta_updates.delta_updates[vector_index]->nullmask;
+		idx_t update_idx{};
+		for (idx_t i{}; i < count; i++) {
+			if (update_idx < update_count && update_ids[update_idx] == i) {
+				//! We use the updates
+				if ((*update_nullmask)[update_idx]) {
+					target_mask.set(i);
+				} else {
+					target_mask.reset(i);
+					tgt_value[i] = update_data[update_idx];
 				}
-				new_sel.set_index(tuple_count++, src_idx);
+				update_idx++;
+			} else {
+				//! We use the original data
+				while (uncompressed_idx + src_run[compressed_idx] <= i) {
+					uncompressed_idx += src_run[compressed_idx];
+					compressed_idx++;
+				}
+				if ((*source_nullmask)[compressed_idx]) {
+					target_mask.set(i);
+				} else {
+					target_mask.reset(i);
+					tgt_value[i] = src_value[compressed_idx];
+				}
 			}
-			tgt_value[src_idx] = src_value[src_idx];
-			src_idx++;
 		}
 	} else {
-		while (tuple_count < count) {
-			for (idx_t i{}; i < src_run[src_idx]; i++) {
-				new_sel.set_index(tuple_count++, src_idx);
+		for (idx_t i{}; i < count; i++) {
+			while (uncompressed_idx + src_run[compressed_idx] <= i) {
+				uncompressed_idx += src_run[compressed_idx];
+				compressed_idx++;
 			}
-			tgt_value[src_idx] = src_value[src_idx];
-			src_idx++;
+			if ((*source_nullmask)[compressed_idx]) {
+				target_mask.set(i);
+			} else {
+				target_mask.reset(i);
+				tgt_value[i] = src_value[compressed_idx];
+			}
 		}
 	}
-
-	target.Slice(new_sel, tuple_count);
 }
 
 void RLESegment::DecompressRLE(data_ptr_t source, nullmask_t *source_nullmask, Vector &target, PhysicalType type,
-                               idx_t count) {
+                               idx_t count, idx_t vector_index) {
 	switch (type) {
 	case PhysicalType::BOOL:
 	case PhysicalType::INT8:
-		rle_decompress<int8_t>(source, source_nullmask, target, count);
+		rle_decompress<int8_t>(source, source_nullmask, target, count, delta_updates, vector_index);
 		break;
 	case PhysicalType::INT16:
-		rle_decompress<int16_t>(source, source_nullmask, target, count);
+		rle_decompress<int16_t>(source, source_nullmask, target, count, delta_updates, vector_index);
 		break;
 	case PhysicalType::INT32:
-		rle_decompress<int32_t>(source, source_nullmask, target, count);
+		rle_decompress<int32_t>(source, source_nullmask, target, count, delta_updates, vector_index);
 		break;
 	case PhysicalType::INT64:
-		rle_decompress<int64_t>(source, source_nullmask, target, count);
+		rle_decompress<int64_t>(source, source_nullmask, target, count, delta_updates, vector_index);
 		break;
 	case PhysicalType::INT128:
-		rle_decompress<hugeint_t>(source, source_nullmask, target, count);
+		rle_decompress<hugeint_t>(source, source_nullmask, target, count, delta_updates, vector_index);
 		break;
 	case PhysicalType::FLOAT:
-		rle_decompress<float>(source, source_nullmask, target, count);
+		rle_decompress<float>(source, source_nullmask, target, count, delta_updates, vector_index);
 		break;
 	case PhysicalType::DOUBLE:
-		rle_decompress<double>(source, source_nullmask, target, count);
+		rle_decompress<double>(source, source_nullmask, target, count, delta_updates, vector_index);
 		break;
 		//	case PhysicalType::INTERVAL:
 		//		return rle_append_loop<interval_t>;
@@ -673,10 +822,9 @@ static void templated_assignment_rle(SelectionVector &sel, data_ptr_t source, nu
 				if (!(source_nullmask)[compressed_idx]) {
 					((T *)result_data)[src_dec_idx] = src_value[compressed_idx];
 					new_sel.set_index(result_count++, src_dec_idx);
-				}
-				else{
+				} else {
 					new_sel.set_index(result_count++, src_dec_idx);
-                    result_nullmask[src_dec_idx] = true;
+					result_nullmask[src_dec_idx] = true;
 				}
 				cur_tuple++;
 			} else {
@@ -705,7 +853,7 @@ static void templated_assignment_rle(SelectionVector &sel, data_ptr_t source, nu
 	}
 	FlatVector::SetNullmask(result, result_nullmask);
 	sel.Initialize(new_sel);
-	result.Slice(sel,approved_tuple_count);
+	result.Slice(sel, approved_tuple_count);
 }
 
 void RLESegment::FilterFetchBaseData(ColumnScanState &state, Vector &result, SelectionVector &sel,

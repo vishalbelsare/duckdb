@@ -151,11 +151,18 @@ SELECT * FROM two_columns where i is NULL and j = 0.025
 NULL	0.0250000
 
 #try update out
-#statement ok
-#UPDATE two_columns set i = 10 where j=1.2
+statement ok
+UPDATE two_columns set i = 10 where j=2.2
 
 # test data
-#query II
-#SELECT * FROM two_columns
-#----
-#10	1.200000
+query II
+SELECT * FROM two_columns
+----
+10	2.200000
+10	2.200000
+2	1.200000
+2	1.300000
+2	2.100000
+3	0.050000
+NULL	0.050000
+NULL	0.0250000
