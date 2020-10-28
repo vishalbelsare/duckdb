@@ -28,9 +28,12 @@ public:
 	unique_ptr<char[]> values;
 	//! Null Mask
 	nullmask_t nullmask;
-
+	//! The type of these deltas
+	PhysicalType type;
+    void insert_updates(SegmentStatistics &stats, Vector &update, row_t *ids,
+                                                      idx_t update_count, idx_t vector_offset);
 	private:
-	size_t get_type_size(PhysicalType type);
+	static size_t get_type_size(PhysicalType type);
 };
 
 

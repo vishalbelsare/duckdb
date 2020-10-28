@@ -47,63 +47,6 @@ void RLESegment::Scan(Transaction &transaction, ColumnScanState &state, idx_t ve
 		//! if there are any versions, check if we need to overwrite the data with the versioned data
 		FetchUpdateData(state, transaction, versions[vector_index], result);
 	}
-
-	//	template <class T>
-	// static void rle_decompress(data_ptr_t source, nullmask_t *source_nullmask, Vector &target, idx_t count,
-	//                           SegmentDeltaUpdates &delta_updates, idx_t vector_index) {
-	//	auto target_data = FlatVector::GetData(target);
-	//	auto &target_mask = FlatVector::Nullmask(target);
-	//	auto src_value = (T *)(source + sizeof(nullmask_t));
-	//	auto src_run = (uint32_t *)(source + sizeof(nullmask_t) + (sizeof(T) * STANDARD_VECTOR_SIZE));
-	//	auto tgt_value = (T *)(target_data);
-	//	idx_t compressed_idx{};
-	//	idx_t uncompressed_idx{};
-	//	if (delta_updates.is_initialized() && delta_updates.delta_updates[vector_index]) {
-	//		//! There are updates we must merge them in
-	//		auto update_count = delta_updates.delta_updates[vector_index]->count;
-	//		sel_t *update_ids = delta_updates.delta_updates[vector_index]->ids;
-	//		T *update_data = (T *)delta_updates.delta_updates[vector_index]->values.get();
-	//		nullmask_t *update_nullmask = &delta_updates.delta_updates[vector_index]->nullmask;
-	//		idx_t update_idx{};
-	//		for (idx_t i{}; i < count; i++) {
-	//			if (update_idx < update_count && update_ids[update_idx] == i) {
-	//				//! We use the updates
-	//				if ((*update_nullmask)[update_idx]) {
-	//					target_mask.set(i);
-	//				} else {
-	//					target_mask.reset(i);
-	//					tgt_value[i] = update_data[update_idx];
-	//				}
-	//				update_idx++;
-	//			} else {
-	//				//! We use the original data
-	//				while (uncompressed_idx + src_run[compressed_idx] <= i) {
-	//					uncompressed_idx += src_run[compressed_idx];
-	//					compressed_idx++;
-	//				}
-	//				if ((*source_nullmask)[compressed_idx]) {
-	//					target_mask.set(i);
-	//				} else {
-	//					target_mask.reset(i);
-	//					tgt_value[i] = src_value[compressed_idx];
-	//				}
-	//			}
-	//		}
-	//	} else {
-	//		for (idx_t i{}; i < count; i++) {
-	//			while (uncompressed_idx + src_run[compressed_idx] <= i) {
-	//				uncompressed_idx += src_run[compressed_idx];
-	//				compressed_idx++;
-	//			}
-	//			if ((*source_nullmask)[compressed_idx]) {
-	//				target_mask.set(i);
-	//			} else {
-	//				target_mask.reset(i);
-	//				tgt_value[i] = src_value[compressed_idx];
-	//			}
-	//		}
-	//	}
-	//}
 }
 
 template <class T, class OP>
@@ -112,7 +55,7 @@ void Select_RLE(SelectionVector &sel, Vector &result, unsigned char *source, nul
 	result.vector_type = VectorType::FLAT_VECTOR;
 	auto result_data = FlatVector::GetData(result);
 	SelectionVector new_sel(approved_tuple_count);
-	auto &result_mask = FlatVector::Nullmask(result);
+//	auto &result_mask = FlatVector::Nullmask(result);
 	auto src_value = (T *)(source);
 	auto src_run = (uint32_t *)(source + (sizeof(T) * STANDARD_VECTOR_SIZE));
 	auto result_value = (T *)(result_data);
@@ -593,24 +536,13 @@ void RLESegment::Update(ColumnData &column_data, SegmentStatistics &stats, Trans
 	auto handle = manager.Pin(block_id);
 	auto baseptr = handle->node->buffer;
 	auto base = baseptr + vector_index * vector_size;
-	auto &base_nullmask = *((nullmask_t *)base);
 
 	if (!delta_updates.is_initialized()) {
 		//! We must initialize our delta updates
 		delta_updates.initialize(max_vector_count, type);
-		delta_updates.insert_update(stats, update, ids, count, vector_offset, vector_index);
 	}
-	//	else {
-	//		// string updates already exist, merge the string updates together
-	//		new_update_info = MergeStringUpdate(stats, update, ids, count, vector_offset,
-	//*string_updates[vector_index]);
-	//	}
-	//
-	//	// now update the original nullmask
-	//	auto &update_nullmask = FlatVector::Nullmask(update);
-	//	for (idx_t i = 0; i < count; i++) {
-	//		base_nullmask[ids[i] - vector_offset] = update_nullmask[i];
-	//	}
+	delta_updates.insert_update(stats, update, ids, count, vector_offset, vector_index);
+
 	//
 	//	// now that the original strings are placed in the undo buffer and the updated strings are placed in the base
 	// table
@@ -928,59 +860,6 @@ static void templated_assignment_rle(SelectionVector &sel, data_ptr_t source, nu
 sel.Initialize(new_sel);
 result.Slice(sel, approved_tuple_count);
 }
-//FlatVector::SetNullmask(result, result_nullmask);
-//sel.Initialize(new_sel);
-//result.Slice(sel, approved_tuple_count);
-//
-//auto result_data = FlatVector::GetData(result);
-//SelectionVector new_sel(approved_tuple_count);
-//idx_t result_count = 0;
-//nullmask_t result_nullmask;
-//if (source_nullmask.any()) {
-//	auto src_value = (T *)(source);
-//	auto src_run = (uint32_t *)(source + (sizeof(T) * STANDARD_VECTOR_SIZE));
-//	idx_t compressed_idx{};
-//	idx_t cur_tuple{};
-//	idx_t decompressed_idx{};
-//	while (cur_tuple < approved_tuple_count) {
-//		idx_t src_dec_idx = sel.get_index(cur_tuple);
-//		if (decompressed_idx <= src_dec_idx && src_dec_idx < decompressed_idx + src_run[compressed_idx]) {
-//			if (!(source_nullmask)[compressed_idx]) {
-//				((T *)result_data)[src_dec_idx] = src_value[compressed_idx];
-//				new_sel.set_index(result_count++, src_dec_idx);
-//			} else {
-//				new_sel.set_index(result_count++, src_dec_idx);
-//				result_nullmask[src_dec_idx] = true;
-//			}
-//			cur_tuple++;
-//		} else {
-//			decompressed_idx += src_run[compressed_idx];
-//			compressed_idx++;
-//		}
-//	}
-//} else {
-//	auto src_value = (T *)(source);
-//	auto src_run = (uint32_t *)(source + (sizeof(T) * STANDARD_VECTOR_SIZE));
-//	idx_t compressed_idx{};
-//	idx_t cur_tuple{};
-//	idx_t decompressed_idx{};
-//	while (cur_tuple < approved_tuple_count) {
-//		idx_t src_dec_idx = sel.get_index(cur_tuple);
-//		if (decompressed_idx <= src_dec_idx && src_dec_idx < decompressed_idx + src_run[compressed_idx]) {
-//			((T *)result_data)[src_dec_idx] = src_value[compressed_idx];
-//			new_sel.set_index(result_count++, src_dec_idx);
-//
-//			cur_tuple++;
-//		} else {
-//			decompressed_idx += src_run[compressed_idx];
-//			compressed_idx++;
-//		}
-//	}
-//}
-//FlatVector::SetNullmask(result, result_nullmask);
-//sel.Initialize(new_sel);
-//result.Slice(sel, approved_tuple_count);
-//}
 
 void RLESegment::FilterFetchBaseData(ColumnScanState &state, Vector &result, SelectionVector &sel,
                                      idx_t &approved_tuple_count) {
