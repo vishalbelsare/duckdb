@@ -23,7 +23,6 @@
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/main/appender.hpp"
 #include "duckdb/main/relation.hpp"
-#include "duckdb/planner/expression_binder/where_binder.hpp"
 #include "duckdb/parser/statement/relation_statement.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/common/serializer/buffered_file_writer.hpp"
@@ -177,17 +176,13 @@ unique_ptr<PreparedStatementData> ClientContext::CreatePreparedStatement(const s
 	result->types = planner.types;
 	result->value_map = move(planner.value_map);
 
-#ifdef DEBUG
 	if (enable_optimizer) {
-#endif
 		profiler.StartPhase("optimizer");
 		Optimizer optimizer(planner.binder, *this);
 		plan = optimizer.Optimize(move(plan));
 		assert(plan);
 		profiler.EndPhase();
-#ifdef DEBUG
 	}
-#endif
 
 	profiler.StartPhase("physical_planner");
 	// now convert logical query plan into a physical query plan
