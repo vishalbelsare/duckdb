@@ -47,51 +47,116 @@ void RLESegment::Scan(Transaction &transaction, ColumnScanState &state, idx_t ve
 		//! if there are any versions, check if we need to overwrite the data with the versioned data
 		FetchUpdateData(state, transaction, versions[vector_index], result);
 	}
+
+	//	template <class T>
+	// static void rle_decompress(data_ptr_t source, nullmask_t *source_nullmask, Vector &target, idx_t count,
+	//                           SegmentDeltaUpdates &delta_updates, idx_t vector_index) {
+	//	auto target_data = FlatVector::GetData(target);
+	//	auto &target_mask = FlatVector::Nullmask(target);
+	//	auto src_value = (T *)(source + sizeof(nullmask_t));
+	//	auto src_run = (uint32_t *)(source + sizeof(nullmask_t) + (sizeof(T) * STANDARD_VECTOR_SIZE));
+	//	auto tgt_value = (T *)(target_data);
+	//	idx_t compressed_idx{};
+	//	idx_t uncompressed_idx{};
+	//	if (delta_updates.is_initialized() && delta_updates.delta_updates[vector_index]) {
+	//		//! There are updates we must merge them in
+	//		auto update_count = delta_updates.delta_updates[vector_index]->count;
+	//		sel_t *update_ids = delta_updates.delta_updates[vector_index]->ids;
+	//		T *update_data = (T *)delta_updates.delta_updates[vector_index]->values.get();
+	//		nullmask_t *update_nullmask = &delta_updates.delta_updates[vector_index]->nullmask;
+	//		idx_t update_idx{};
+	//		for (idx_t i{}; i < count; i++) {
+	//			if (update_idx < update_count && update_ids[update_idx] == i) {
+	//				//! We use the updates
+	//				if ((*update_nullmask)[update_idx]) {
+	//					target_mask.set(i);
+	//				} else {
+	//					target_mask.reset(i);
+	//					tgt_value[i] = update_data[update_idx];
+	//				}
+	//				update_idx++;
+	//			} else {
+	//				//! We use the original data
+	//				while (uncompressed_idx + src_run[compressed_idx] <= i) {
+	//					uncompressed_idx += src_run[compressed_idx];
+	//					compressed_idx++;
+	//				}
+	//				if ((*source_nullmask)[compressed_idx]) {
+	//					target_mask.set(i);
+	//				} else {
+	//					target_mask.reset(i);
+	//					tgt_value[i] = src_value[compressed_idx];
+	//				}
+	//			}
+	//		}
+	//	} else {
+	//		for (idx_t i{}; i < count; i++) {
+	//			while (uncompressed_idx + src_run[compressed_idx] <= i) {
+	//				uncompressed_idx += src_run[compressed_idx];
+	//				compressed_idx++;
+	//			}
+	//			if ((*source_nullmask)[compressed_idx]) {
+	//				target_mask.set(i);
+	//			} else {
+	//				target_mask.reset(i);
+	//				tgt_value[i] = src_value[compressed_idx];
+	//			}
+	//		}
+	//	}
+	//}
 }
 
 template <class T, class OP>
 void Select_RLE(SelectionVector &sel, Vector &result, unsigned char *source, nullmask_t *source_nullmask, T constant,
-                idx_t &approved_tuple_count) {
+                idx_t &approved_tuple_count, SegmentDeltaUpdates &delta_updates, idx_t vector_index) {
 	result.vector_type = VectorType::FLAT_VECTOR;
 	auto result_data = FlatVector::GetData(result);
 	SelectionVector new_sel(approved_tuple_count);
-	idx_t result_count = 0;
-	if (source_nullmask->any()) {
-		auto src_value = (T *)(source);
-		auto src_run = (uint32_t *)(source + (sizeof(T) * STANDARD_VECTOR_SIZE));
-		idx_t compressed_idx{};
-		idx_t cur_tuple{};
-		idx_t decompressed_idx{};
-		while (cur_tuple < approved_tuple_count) {
-			idx_t src_dec_idx = sel.get_index(cur_tuple);
-			if (decompressed_idx <= src_dec_idx && src_dec_idx < decompressed_idx + src_run[compressed_idx]) {
-				if (!(*source_nullmask)[compressed_idx] && OP::Operation(src_value[compressed_idx], constant)) {
-					((T *)result_data)[src_dec_idx] = src_value[compressed_idx];
-					new_sel.set_index(result_count++, src_dec_idx);
+	auto &result_mask = FlatVector::Nullmask(result);
+	auto src_value = (T *)(source);
+	auto src_run = (uint32_t *)(source + (sizeof(T) * STANDARD_VECTOR_SIZE));
+	auto result_value = (T *)(result_data);
+	idx_t compressed_idx{};
+	idx_t uncompressed_idx{};
+	idx_t result_count{};
+	if (delta_updates.is_initialized() && delta_updates.delta_updates[vector_index]) {
+		//! There are updates we must merge them in
+		auto update_count = delta_updates.delta_updates[vector_index]->count;
+		sel_t *update_ids = delta_updates.delta_updates[vector_index]->ids;
+		T *update_data = (T *)delta_updates.delta_updates[vector_index]->values.get();
+		nullmask_t *update_nullmask = &delta_updates.delta_updates[vector_index]->nullmask;
+		idx_t update_idx{};
+		for (idx_t i{}; i < approved_tuple_count; i++) {
+			auto cur_idx = sel.get_index(i);
+			if (update_idx < update_count && update_ids[update_idx] == cur_idx) {
+				//! We use the updates
+				if (!(*update_nullmask)[update_idx] && OP::Operation(update_data[update_idx], constant)) {
+					result_value[cur_idx] = update_data[update_idx];
+					new_sel.set_index(result_count++, cur_idx);
 				}
-				cur_tuple++;
+				update_idx++;
 			} else {
-				decompressed_idx += src_run[compressed_idx];
-				compressed_idx++;
+				//! We use the original data
+				while (uncompressed_idx + src_run[compressed_idx] <= cur_idx) {
+					uncompressed_idx += src_run[compressed_idx];
+					compressed_idx++;
+				}
+				if (!(*source_nullmask)[compressed_idx] && OP::Operation(src_value[compressed_idx], constant)) {
+					result_value[cur_idx] = src_value[compressed_idx];
+					new_sel.set_index(result_count++, cur_idx);
+				}
 			}
 		}
 	} else {
-		auto src_value = (T *)(source);
-		auto src_run = (uint32_t *)(source + (sizeof(T) * STANDARD_VECTOR_SIZE));
-		idx_t compressed_idx{};
-		idx_t cur_tuple{};
-		idx_t decompressed_idx{};
-		while (cur_tuple < approved_tuple_count) {
-			idx_t src_dec_idx = sel.get_index(cur_tuple);
-			if (decompressed_idx <= src_dec_idx && src_dec_idx < decompressed_idx + src_run[compressed_idx]) {
-				if (OP::Operation(src_value[compressed_idx], constant)) {
-					((T *)result_data)[src_dec_idx] = src_value[compressed_idx];
-					new_sel.set_index(result_count++, src_dec_idx);
-				}
-				cur_tuple++;
-			} else {
-				decompressed_idx += src_run[compressed_idx];
+		for (idx_t i{}; i < approved_tuple_count; i++) {
+			auto cur_idx = sel.get_index(i);
+			while (uncompressed_idx + src_run[compressed_idx] <= cur_idx) {
+				uncompressed_idx += src_run[compressed_idx];
 				compressed_idx++;
+			}
+			if (!(*source_nullmask)[compressed_idx] && OP::Operation(src_value[compressed_idx], constant)) {
+				result_value[cur_idx] = src_value[compressed_idx];
+				new_sel.set_index(result_count++, cur_idx);
 			}
 		}
 	}
@@ -196,35 +261,43 @@ void Select_RLE(SelectionVector &sel, Vector &result, unsigned char *source, nul
 template <class OP>
 static void templated_select_rle_operation(SelectionVector &sel, Vector &result, PhysicalType type,
                                            unsigned char *source, nullmask_t *source_mask, Value &constant,
-                                           idx_t &approved_tuple_count) {
+                                           idx_t &approved_tuple_count, SegmentDeltaUpdates &delta_updates,
+                                           idx_t vector_index) {
 	// the inplace loops take the result as the last parameter
 	switch (type) {
 	case PhysicalType::INT8: {
-		Select_RLE<int8_t, OP>(sel, result, source, source_mask, constant.value_.tinyint, approved_tuple_count);
+		Select_RLE<int8_t, OP>(sel, result, source, source_mask, constant.value_.tinyint, approved_tuple_count,
+		                       delta_updates, vector_index);
 		break;
 	}
 	case PhysicalType::INT16: {
-		Select_RLE<int16_t, OP>(sel, result, source, source_mask, constant.value_.smallint, approved_tuple_count);
+		Select_RLE<int16_t, OP>(sel, result, source, source_mask, constant.value_.smallint, approved_tuple_count,
+		                        delta_updates, vector_index);
 		break;
 	}
 	case PhysicalType::INT32: {
-		Select_RLE<int32_t, OP>(sel, result, source, source_mask, constant.value_.integer, approved_tuple_count);
+		Select_RLE<int32_t, OP>(sel, result, source, source_mask, constant.value_.integer, approved_tuple_count,
+		                        delta_updates, vector_index);
 		break;
 	}
 	case PhysicalType::INT64: {
-		Select_RLE<int64_t, OP>(sel, result, source, source_mask, constant.value_.bigint, approved_tuple_count);
+		Select_RLE<int64_t, OP>(sel, result, source, source_mask, constant.value_.bigint, approved_tuple_count,
+		                        delta_updates, vector_index);
 		break;
 	}
 	case PhysicalType::INT128: {
-		Select_RLE<hugeint_t, OP>(sel, result, source, source_mask, constant.value_.hugeint, approved_tuple_count);
+		Select_RLE<hugeint_t, OP>(sel, result, source, source_mask, constant.value_.hugeint, approved_tuple_count,
+		                          delta_updates, vector_index);
 		break;
 	}
 	case PhysicalType::FLOAT: {
-		Select_RLE<float, OP>(sel, result, source, source_mask, constant.value_.float_, approved_tuple_count);
+		Select_RLE<float, OP>(sel, result, source, source_mask, constant.value_.float_, approved_tuple_count,
+		                      delta_updates, vector_index);
 		break;
 	}
 	case PhysicalType::DOUBLE: {
-		Select_RLE<double, OP>(sel, result, source, source_mask, constant.value_.double_, approved_tuple_count);
+		Select_RLE<double, OP>(sel, result, source, source_mask, constant.value_.double_, approved_tuple_count,
+		                       delta_updates, vector_index);
 		break;
 	}
 	default:
@@ -295,29 +368,32 @@ void RLESegment::Select(ColumnScanState &state, Vector &result, SelectionVector 
 		switch (tableFilter[0].comparison_type) {
 		case ExpressionType::COMPARE_EQUAL: {
 			templated_select_rle_operation<Equals>(sel, result, state.current->type, source_data, source_nullmask,
-			                                       tableFilter[0].constant, approved_tuple_count);
+			                                       tableFilter[0].constant, approved_tuple_count, delta_updates,
+			                                       vector_index);
 			break;
 		}
 		case ExpressionType::COMPARE_LESSTHAN: {
 			templated_select_rle_operation<LessThan>(sel, result, state.current->type, source_data, source_nullmask,
-			                                         tableFilter[0].constant, approved_tuple_count);
+			                                         tableFilter[0].constant, approved_tuple_count, delta_updates,
+			                                         vector_index);
 			break;
 		}
 		case ExpressionType::COMPARE_GREATERTHAN: {
 			templated_select_rle_operation<GreaterThan>(sel, result, state.current->type, source_data, source_nullmask,
-			                                            tableFilter[0].constant, approved_tuple_count);
+			                                            tableFilter[0].constant, approved_tuple_count, delta_updates,
+			                                            vector_index);
 			break;
 		}
 		case ExpressionType::COMPARE_LESSTHANOREQUALTO: {
 			templated_select_rle_operation<LessThanEquals>(sel, result, state.current->type, source_data,
 			                                               source_nullmask, tableFilter[0].constant,
-			                                               approved_tuple_count);
+			                                               approved_tuple_count, delta_updates, vector_index);
 			break;
 		}
 		case ExpressionType::COMPARE_GREATERTHANOREQUALTO: {
 			templated_select_rle_operation<GreaterThanEquals>(sel, result, state.current->type, source_data,
 			                                                  source_nullmask, tableFilter[0].constant,
-			                                                  approved_tuple_count);
+			                                                  approved_tuple_count, delta_updates, vector_index);
 			break;
 		}
 		default:
@@ -648,22 +724,6 @@ static void rle_append_loop(SegmentStatistics &stats, data_ptr_t target, idx_t &
 	}
 }
 
-// if (string_updates && string_updates[vector_index]) {
-//		// there are updates: merge them in
-//		auto &info = *string_updates[vector_index];
-//		idx_t update_idx = 0;
-//		for (idx_t i = 0; i < count; i++) {
-//			if (update_idx < info.count && info.ids[update_idx] == i) {
-//				// use update info
-//				result_data[i] = ReadString(state.handles, info.block_ids[update_idx], info.offsets[update_idx]);
-//				update_idx++;
-//			} else {
-//				// use base table info
-//				result_data[i] = FetchStringFromDict(state.handles, baseptr, base_data[i]);
-//			}
-//		}
-//	}
-
 template <class T>
 static void rle_decompress(data_ptr_t source, nullmask_t *source_nullmask, Vector &target, idx_t count,
                            SegmentDeltaUpdates &delta_updates, idx_t vector_index) {
@@ -804,57 +864,123 @@ idx_t RLESegment::Append(SegmentStatistics &stats, Vector &data, idx_t offset, i
 
 template <class T>
 static void templated_assignment_rle(SelectionVector &sel, data_ptr_t source, nullmask_t &source_nullmask,
-                                     Vector &result, idx_t approved_tuple_count) {
+                                     Vector &result, idx_t approved_tuple_count, SegmentDeltaUpdates &delta_updates,
+                                     idx_t vector_index) {
 
+	result.vector_type = VectorType::FLAT_VECTOR;
 	auto result_data = FlatVector::GetData(result);
 	SelectionVector new_sel(approved_tuple_count);
-	idx_t result_count = 0;
 	nullmask_t result_nullmask;
-	if (source_nullmask.any()) {
-		auto src_value = (T *)(source);
-		auto src_run = (uint32_t *)(source + (sizeof(T) * STANDARD_VECTOR_SIZE));
-		idx_t compressed_idx{};
-		idx_t cur_tuple{};
-		idx_t decompressed_idx{};
-		while (cur_tuple < approved_tuple_count) {
-			idx_t src_dec_idx = sel.get_index(cur_tuple);
-			if (decompressed_idx <= src_dec_idx && src_dec_idx < decompressed_idx + src_run[compressed_idx]) {
-				if (!(source_nullmask)[compressed_idx]) {
-					((T *)result_data)[src_dec_idx] = src_value[compressed_idx];
-					new_sel.set_index(result_count++, src_dec_idx);
+	auto src_value = (T *)(source);
+	auto src_run = (uint32_t *)(source + (sizeof(T) * STANDARD_VECTOR_SIZE));
+	auto result_value = (T *)(result_data);
+	idx_t compressed_idx{};
+	idx_t uncompressed_idx{};
+	if (delta_updates.is_initialized() && delta_updates.delta_updates[vector_index]) {
+		//! There are updates we must merge them in
+		auto update_count = delta_updates.delta_updates[vector_index]->count;
+		sel_t *update_ids = delta_updates.delta_updates[vector_index]->ids;
+		T *update_data = (T *)delta_updates.delta_updates[vector_index]->values.get();
+		nullmask_t *update_nullmask = &delta_updates.delta_updates[vector_index]->nullmask;
+		idx_t update_idx{};
+		for (idx_t i{}; i < approved_tuple_count; i++) {
+			auto cur_idx = sel.get_index(i);
+			if (update_idx < update_count && update_ids[update_idx] == cur_idx) {
+				//! We use the updates
+				if ((*update_nullmask)[cur_idx]) {
+					result_nullmask.set(cur_idx);
 				} else {
-					new_sel.set_index(result_count++, src_dec_idx);
-					result_nullmask[src_dec_idx] = true;
+					result_value[cur_idx] = update_data[compressed_idx];
 				}
-				cur_tuple++;
+				new_sel.set_index(i, cur_idx);
+				update_idx++;
+
 			} else {
-				decompressed_idx += src_run[compressed_idx];
-				compressed_idx++;
+				//! We use the original data
+				while (uncompressed_idx + src_run[compressed_idx] <= cur_idx) {
+					uncompressed_idx += src_run[compressed_idx];
+					compressed_idx++;
+				}
+				if (source_nullmask[cur_idx]) {
+					result_nullmask.set(cur_idx);
+				} else {
+					result_value[cur_idx] = src_value[compressed_idx];
+				}
+				new_sel.set_index(i, cur_idx);
 			}
 		}
 	} else {
-		auto src_value = (T *)(source);
-		auto src_run = (uint32_t *)(source + (sizeof(T) * STANDARD_VECTOR_SIZE));
-		idx_t compressed_idx{};
-		idx_t cur_tuple{};
-		idx_t decompressed_idx{};
-		while (cur_tuple < approved_tuple_count) {
-			idx_t src_dec_idx = sel.get_index(cur_tuple);
-			if (decompressed_idx <= src_dec_idx && src_dec_idx < decompressed_idx + src_run[compressed_idx]) {
-				((T *)result_data)[src_dec_idx] = src_value[compressed_idx];
-				new_sel.set_index(result_count++, src_dec_idx);
-
-				cur_tuple++;
-			} else {
-				decompressed_idx += src_run[compressed_idx];
+		for (idx_t i{}; i < approved_tuple_count; i++) {
+			auto cur_idx = sel.get_index(i);
+			while (uncompressed_idx + src_run[compressed_idx] <= cur_idx) {
+				uncompressed_idx += src_run[compressed_idx];
 				compressed_idx++;
 			}
+			if (source_nullmask[compressed_idx]) {
+				result_nullmask.set(cur_idx);
+			} else {
+				result_value[cur_idx] = src_value[compressed_idx];
+			}
+			new_sel.set_index(i, cur_idx);
 		}
 	}
 	FlatVector::SetNullmask(result, result_nullmask);
-	sel.Initialize(new_sel);
-	result.Slice(sel, approved_tuple_count);
+sel.Initialize(new_sel);
+result.Slice(sel, approved_tuple_count);
 }
+//FlatVector::SetNullmask(result, result_nullmask);
+//sel.Initialize(new_sel);
+//result.Slice(sel, approved_tuple_count);
+//
+//auto result_data = FlatVector::GetData(result);
+//SelectionVector new_sel(approved_tuple_count);
+//idx_t result_count = 0;
+//nullmask_t result_nullmask;
+//if (source_nullmask.any()) {
+//	auto src_value = (T *)(source);
+//	auto src_run = (uint32_t *)(source + (sizeof(T) * STANDARD_VECTOR_SIZE));
+//	idx_t compressed_idx{};
+//	idx_t cur_tuple{};
+//	idx_t decompressed_idx{};
+//	while (cur_tuple < approved_tuple_count) {
+//		idx_t src_dec_idx = sel.get_index(cur_tuple);
+//		if (decompressed_idx <= src_dec_idx && src_dec_idx < decompressed_idx + src_run[compressed_idx]) {
+//			if (!(source_nullmask)[compressed_idx]) {
+//				((T *)result_data)[src_dec_idx] = src_value[compressed_idx];
+//				new_sel.set_index(result_count++, src_dec_idx);
+//			} else {
+//				new_sel.set_index(result_count++, src_dec_idx);
+//				result_nullmask[src_dec_idx] = true;
+//			}
+//			cur_tuple++;
+//		} else {
+//			decompressed_idx += src_run[compressed_idx];
+//			compressed_idx++;
+//		}
+//	}
+//} else {
+//	auto src_value = (T *)(source);
+//	auto src_run = (uint32_t *)(source + (sizeof(T) * STANDARD_VECTOR_SIZE));
+//	idx_t compressed_idx{};
+//	idx_t cur_tuple{};
+//	idx_t decompressed_idx{};
+//	while (cur_tuple < approved_tuple_count) {
+//		idx_t src_dec_idx = sel.get_index(cur_tuple);
+//		if (decompressed_idx <= src_dec_idx && src_dec_idx < decompressed_idx + src_run[compressed_idx]) {
+//			((T *)result_data)[src_dec_idx] = src_value[compressed_idx];
+//			new_sel.set_index(result_count++, src_dec_idx);
+//
+//			cur_tuple++;
+//		} else {
+//			decompressed_idx += src_run[compressed_idx];
+//			compressed_idx++;
+//		}
+//	}
+//}
+//FlatVector::SetNullmask(result, result_nullmask);
+//sel.Initialize(new_sel);
+//result.Slice(sel, approved_tuple_count);
+//}
 
 void RLESegment::FilterFetchBaseData(ColumnScanState &state, Vector &result, SelectionVector &sel,
                                      idx_t &approved_tuple_count) {
@@ -871,36 +997,42 @@ void RLESegment::FilterFetchBaseData(ColumnScanState &state, Vector &result, Sel
 	auto source_data = data + offset + sizeof(nullmask_t);
 	//! fetch the nullmask and copy the data from the base table
 	result.vector_type = VectorType::FLAT_VECTOR;
-	nullmask_t result_nullmask;
 	//! the inplace loops take the result as the last parameter
 	switch (type) {
 	case PhysicalType::BOOL:
 	case PhysicalType::INT8: {
-		templated_assignment_rle<int8_t>(sel, source_data, *source_nullmask, result, approved_tuple_count);
+		templated_assignment_rle<int8_t>(sel, source_data, *source_nullmask, result, approved_tuple_count,
+		                                 delta_updates, vector_index);
 		break;
 	}
 	case PhysicalType::INT16: {
-		templated_assignment_rle<int16_t>(sel, source_data, *source_nullmask, result, approved_tuple_count);
+		templated_assignment_rle<int16_t>(sel, source_data, *source_nullmask, result, approved_tuple_count,
+		                                  delta_updates, vector_index);
 		break;
 	}
 	case PhysicalType::INT32: {
-		templated_assignment_rle<int32_t>(sel, source_data, *source_nullmask, result, approved_tuple_count);
+		templated_assignment_rle<int32_t>(sel, source_data, *source_nullmask, result, approved_tuple_count,
+		                                  delta_updates, vector_index);
 		break;
 	}
 	case PhysicalType::INT64: {
-		templated_assignment_rle<int64_t>(sel, source_data, *source_nullmask, result, approved_tuple_count);
+		templated_assignment_rle<int64_t>(sel, source_data, *source_nullmask, result, approved_tuple_count,
+		                                  delta_updates, vector_index);
 		break;
 	}
 	case PhysicalType::INT128: {
-		templated_assignment_rle<hugeint_t>(sel, source_data, *source_nullmask, result, approved_tuple_count);
+		templated_assignment_rle<hugeint_t>(sel, source_data, *source_nullmask, result, approved_tuple_count,
+		                                    delta_updates, vector_index);
 		break;
 	}
 	case PhysicalType::FLOAT: {
-		templated_assignment_rle<float>(sel, source_data, *source_nullmask, result, approved_tuple_count);
+		templated_assignment_rle<float>(sel, source_data, *source_nullmask, result, approved_tuple_count, delta_updates,
+		                                vector_index);
 		break;
 	}
 	case PhysicalType::DOUBLE: {
-		templated_assignment_rle<double>(sel, source_data, *source_nullmask, result, approved_tuple_count);
+		templated_assignment_rle<double>(sel, source_data, *source_nullmask, result, approved_tuple_count,
+		                                 delta_updates, vector_index);
 		break;
 	}
 	default:

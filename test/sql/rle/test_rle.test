@@ -166,3 +166,17 @@ SELECT * FROM two_columns
 3	0.050000
 NULL	0.050000
 NULL	0.0250000
+
+# test data
+query II
+SELECT * FROM two_columns where i = 10
+----
+10	2.200000
+10	2.200000
+
+# test data
+query II
+SELECT * FROM two_columns where j = 2.2
+----
+10	2.200000
+10	2.200000
