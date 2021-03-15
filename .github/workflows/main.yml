@@ -342,7 +342,7 @@ jobs:
         python-version: '3.7'
 
     - name: Install
-      run: sudo apt update -y -qq && sudo apt install -y -qq ninja-build libc6-dev-i386 gcc-multilib g++-multilib lib32readline6-dev
+      run: sudo apt-get update -y -qq && sudo apt-get install -y -qq ninja-build libc6-dev-i386 gcc-multilib g++-multilib lib32readline6-dev g++-5-multilib gcc-5-multilib
 
     - name: Build
       run: |
