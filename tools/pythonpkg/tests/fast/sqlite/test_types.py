@@ -1,4 +1,4 @@
-#-*- coding: iso-8859-1 -*-
+# -*- coding: iso-8859-1 -*-
 # pysqlite2/test/types.py: tests for type conversion and detection
 #
 # Copyright (C) 2005 Gerhard Häring <gh@ghaering.de>
@@ -28,6 +28,7 @@ import datetime
 import decimal
 import unittest
 import duckdb
+import pytest
 
 
 class DuckDBTypeTests(unittest.TestCase):
@@ -66,20 +67,44 @@ class DuckDBTypeTests(unittest.TestCase):
         row = self.cur.fetchone()
         self.assertEqual(row[0], val)
 
-    def test_CheckDecimal(self):
+    def test_CheckDecimalTooBig(self):
         val = 17.29
         self.cur.execute("insert into test(f) values (?)", (decimal.Decimal(val),))
         self.cur.execute("select f from test")
         row = self.cur.fetchone()
         self.assertEqual(row[0], val)
 
+    def test_CheckDecimal(self):
+        val = '17.29'
+        val = decimal.Decimal(val)
+        self.cur.execute("insert into test(f) values (?)", (val,))
+        self.cur.execute("select f from test")
+        row = self.cur.fetchone()
+        self.assertEqual(row[0], self.cur.execute("select 17.29::DOUBLE").fetchone()[0])
+
+    def test_CheckDecimalWithExponent(self):
+        val = '1E5'
+        val = decimal.Decimal(val)
+        self.cur.execute("insert into test(f) values (?)", (val,))
+        self.cur.execute("select f from test")
+        row = self.cur.fetchone()
+        self.assertEqual(row[0], self.cur.execute("select 1.00000::DOUBLE").fetchone()[0])
+
     def test_CheckNaN(self):
-        with self.assertRaises(RuntimeError) as context:
-            self.cur.execute("insert into test(f) values (?)", (decimal.Decimal('nan'),))
+        import math
+
+        val = decimal.Decimal('nan')
+        self.cur.execute("insert into test(f) values (?)", (val,))
+        self.cur.execute("select f from test")
+        row = self.cur.fetchone()
+        self.assertEqual(math.isnan(row[0]), True)
 
     def test_CheckInf(self):
-        with self.assertRaises(RuntimeError) as context:
-            self.cur.execute("insert into test(f) values (?)", (decimal.Decimal('inf'),))
+        val = decimal.Decimal('inf')
+        self.cur.execute("insert into test(f) values (?)", (val,))
+        self.cur.execute("select f from test")
+        row = self.cur.fetchone()
+        self.assertEqual(row[0], val)
 
     def test_CheckBytesBlob(self):
         val = b"Guglhupf"
@@ -117,9 +142,7 @@ class DuckDBTypeTests(unittest.TestCase):
         self.assertEqual(row[0], u"Österreich")
 
 
-
 class CommonTableExpressionTests(unittest.TestCase):
-
     def setUp(self):
         self.con = duckdb.connect(":memory:")
         self.cur = self.con.cursor()
@@ -149,6 +172,7 @@ class CommonTableExpressionTests(unittest.TestCase):
         self.cur.execute("with bar as (select * from test) select * from test where x = 2")
         self.assertIsNotNone(self.cur.description)
         self.assertEqual(self.cur.description[0][0], "x")
+
 
 class DateTimeTests(unittest.TestCase):
     def setUp(self):
@@ -210,3 +234,59 @@ class DateTimeTests(unittest.TestCase):
         ts2 = self.cur.fetchone()[0]
         self.assertEqual(ts.year, ts2.year)
         self.assertEqual(ts2.microsecond, 510241)
+
+
+class ListTests(unittest.TestCase):
+    def setUp(self):
+        self.con = duckdb.connect(":memory:")
+        self.cur = self.con.cursor()
+        self.cur.execute("create table test(single INTEGER[], nested INTEGER[][])")
+
+    def tearDown(self):
+        self.cur.close()
+        self.con.close()
+
+    def test_CheckEmptyList(self):
+        val = []
+        self.cur.execute("insert into test values (?, ?)", (val, val))
+        self.assertEqual(
+            self.cur.execute("select * from test").fetchall(),
+            [(val, val)],
+        )
+
+    def test_CheckSingleList(self):
+        val = [1, 2, 3]
+        self.cur.execute("insert into test(single) values (?)", (val,))
+        self.assertEqual(
+            self.cur.execute("select * from test").fetchall(),
+            [(val, None)],
+        )
+
+    def test_CheckNestedList(self):
+        val = [[1], [2], [3, 4]]
+        self.cur.execute("insert into test(nested) values (?)", (val,))
+        self.assertEqual(
+            self.cur.execute("select * from test").fetchall(),
+            [
+                (
+                    None,
+                    val,
+                )
+            ],
+        )
+
+    def test_CheckNone(self):
+        val = None
+        self.cur.execute("insert into test values (?, ?)", (val, val))
+        self.assertEqual(
+            self.cur.execute("select * from test").fetchall(),
+            [(val, val)],
+        )
+
+    def test_CheckEmbeddedNone(self):
+        val = [None]
+        self.cur.execute("insert into test values (?, ?)", (val, val))
+        self.assertEqual(
+            self.cur.execute("select * from test").fetchall(),
+            [(val, val)],
+        )

@@ -30,9 +30,9 @@ static void append_to_integers(DuckDB *db, size_t threadnr) {
 }
 
 TEST_CASE("Test concurrent appends", "[appender][.]") {
-	unique_ptr<QueryResult> result;
+	duckdb::unique_ptr<QueryResult> result;
 	DBConfig config;
-	config.maximum_threads = 1;
+	config.options.maximum_threads = 1;
 	DuckDB db(nullptr, &config);
 	Connection con(db);
 

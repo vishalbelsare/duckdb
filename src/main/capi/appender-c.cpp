@@ -1,4 +1,4 @@
-#include "duckdb/main/capi_internal.hpp"
+#include "duckdb/main/capi/capi_internal.hpp"
 
 using duckdb::Appender;
 using duckdb::AppenderWrapper;
@@ -12,7 +12,7 @@ using duckdb::timestamp_t;
 
 duckdb_state duckdb_appender_create(duckdb_connection connection, const char *schema, const char *table,
                                     duckdb_appender *out_appender) {
-	Connection *conn = (Connection *)connection;
+	Connection *conn = reinterpret_cast<Connection *>(connection);
 
 	if (!connection || !table || !out_appender) {
 		return DuckDBError;
@@ -23,7 +23,7 @@ duckdb_state duckdb_appender_create(duckdb_connection connection, const char *sc
 	auto wrapper = new AppenderWrapper();
 	*out_appender = (duckdb_appender)wrapper;
 	try {
-		wrapper->appender = duckdb::make_unique<Appender>(*conn, schema, table);
+		wrapper->appender = duckdb::make_uniq<Appender>(*conn, schema, table);
 	} catch (std::exception &ex) {
 		wrapper->error = ex.what();
 		return DuckDBError;
@@ -39,7 +39,7 @@ duckdb_state duckdb_appender_destroy(duckdb_appender *appender) {
 		return DuckDBError;
 	}
 	duckdb_appender_close(*appender);
-	auto wrapper = (AppenderWrapper *)*appender;
+	auto wrapper = reinterpret_cast<AppenderWrapper *>(*appender);
 	if (wrapper) {
 		delete wrapper;
 	}
@@ -52,7 +52,7 @@ duckdb_state duckdb_appender_run_function(duckdb_appender appender, FUN &&functi
 	if (!appender) {
 		return DuckDBError;
 	}
-	auto wrapper = (AppenderWrapper *)appender;
+	auto wrapper = reinterpret_cast<AppenderWrapper *>(appender);
 	if (!wrapper->appender) {
 		return DuckDBError;
 	}
@@ -72,7 +72,7 @@ const char *duckdb_appender_error(duckdb_appender appender) {
 	if (!appender) {
 		return nullptr;
 	}
-	auto wrapper = (AppenderWrapper *)appender;
+	auto wrapper = reinterpret_cast<AppenderWrapper *>(appender);
 	if (wrapper->error.empty()) {
 		return nullptr;
 	}
@@ -92,9 +92,12 @@ duckdb_state duckdb_append_internal(duckdb_appender appender, T value) {
 	if (!appender) {
 		return DuckDBError;
 	}
-	auto *appender_instance = (AppenderWrapper *)appender;
+	auto *appender_instance = reinterpret_cast<AppenderWrapper *>(appender);
 	try {
 		appender_instance->appender->Append<T>(value);
+	} catch (std::exception &ex) {
+		appender_instance->error = ex.what();
+		return DuckDBError;
 	} catch (...) {
 		return DuckDBError;
 	}
@@ -184,7 +187,8 @@ duckdb_state duckdb_append_varchar_length(duckdb_appender appender, const char *
 	return duckdb_append_internal<string_t>(appender, string_t(val, length));
 }
 duckdb_state duckdb_append_blob(duckdb_appender appender, const void *data, idx_t length) {
-	return duckdb_append_internal<string_t>(appender, string_t((const char *)data, length));
+	auto value = duckdb::Value::BLOB((duckdb::const_data_ptr_t)data, length);
+	return duckdb_append_internal<duckdb::Value>(appender, value);
 }
 
 duckdb_state duckdb_appender_flush(duckdb_appender appender) {
@@ -193,4 +197,12 @@ duckdb_state duckdb_appender_flush(duckdb_appender appender) {
 
 duckdb_state duckdb_appender_close(duckdb_appender appender) {
 	return duckdb_appender_run_function(appender, [&](Appender &appender) { appender.Close(); });
+}
+
+duckdb_state duckdb_append_data_chunk(duckdb_appender appender, duckdb_data_chunk chunk) {
+	if (!chunk) {
+		return DuckDBError;
+	}
+	auto data_chunk = (duckdb::DataChunk *)chunk;
+	return duckdb_appender_run_function(appender, [&](Appender &appender) { appender.AppendDataChunk(*data_chunk); });
 }

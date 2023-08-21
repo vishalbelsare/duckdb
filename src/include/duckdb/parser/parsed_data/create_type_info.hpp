@@ -16,23 +16,26 @@
 namespace duckdb {
 
 struct CreateTypeInfo : public CreateInfo {
-
-	CreateTypeInfo() : CreateInfo(CatalogType::TYPE_ENTRY) {
-	}
+	CreateTypeInfo();
+	CreateTypeInfo(string name_p, LogicalType type_p);
 
 	//! Name of the Type
 	string name;
-	//! Shared Pointer of Logical Type
-	unique_ptr<LogicalType> type;
+	//! Logical Type
+	LogicalType type;
+	//! Used by create enum from query
+	unique_ptr<SQLStatement> query;
 
 public:
-	unique_ptr<CreateInfo> Copy() const override {
-		auto result = make_unique<CreateTypeInfo>();
-		CopyProperties(*result);
-		result->name = name;
-		result->type = make_unique<LogicalType>(*type);
-		return move(result);
-	}
+	unique_ptr<CreateInfo> Copy() const override;
+
+	DUCKDB_API static unique_ptr<CreateTypeInfo> Deserialize(Deserializer &deserializer);
+
+	DUCKDB_API void FormatSerialize(FormatSerializer &serializer) const override;
+	DUCKDB_API static unique_ptr<CreateInfo> FormatDeserialize(FormatDeserializer &deserializer);
+
+protected:
+	void SerializeInternal(Serializer &) const override;
 };
 
 } // namespace duckdb

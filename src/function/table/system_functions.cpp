@@ -10,25 +10,31 @@ namespace duckdb {
 
 void BuiltinFunctions::RegisterSQLiteFunctions() {
 	PragmaVersion::RegisterFunction(*this);
-	PragmaFunctionPragma::RegisterFunction(*this);
+	PragmaPlatform::RegisterFunction(*this);
 	PragmaCollations::RegisterFunction(*this);
 	PragmaTableInfo::RegisterFunction(*this);
 	PragmaStorageInfo::RegisterFunction(*this);
 	PragmaDatabaseSize::RegisterFunction(*this);
-	PragmaDatabaseList::RegisterFunction(*this);
 	PragmaLastProfilingOutput::RegisterFunction(*this);
 	PragmaDetailedProfilingOutput::RegisterFunction(*this);
 
 	DuckDBColumnsFun::RegisterFunction(*this);
 	DuckDBConstraintsFun::RegisterFunction(*this);
+	DuckDBDatabasesFun::RegisterFunction(*this);
+	DuckDBFunctionsFun::RegisterFunction(*this);
+	DuckDBKeywordsFun::RegisterFunction(*this);
 	DuckDBIndexesFun::RegisterFunction(*this);
 	DuckDBSchemasFun::RegisterFunction(*this);
 	DuckDBDependenciesFun::RegisterFunction(*this);
+	DuckDBExtensionsFun::RegisterFunction(*this);
 	DuckDBSequencesFun::RegisterFunction(*this);
 	DuckDBSettingsFun::RegisterFunction(*this);
 	DuckDBTablesFun::RegisterFunction(*this);
+	DuckDBTemporaryFilesFun::RegisterFunction(*this);
 	DuckDBTypesFun::RegisterFunction(*this);
 	DuckDBViewsFun::RegisterFunction(*this);
+	TestAllTypesFun::RegisterFunction(*this);
+	TestVectorTypesFun::RegisterFunction(*this);
 }
 
 } // namespace duckdb

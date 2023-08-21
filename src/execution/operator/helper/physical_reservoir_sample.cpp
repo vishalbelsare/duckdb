@@ -8,19 +8,19 @@ namespace duckdb {
 //===--------------------------------------------------------------------===//
 class SampleGlobalSinkState : public GlobalSinkState {
 public:
-	explicit SampleGlobalSinkState(SampleOptions &options) {
+	explicit SampleGlobalSinkState(Allocator &allocator, SampleOptions &options) {
 		if (options.is_percentage) {
 			auto percentage = options.sample_size.GetValue<double>();
 			if (percentage == 0) {
 				return;
 			}
-			sample = make_unique<ReservoirSamplePercentage>(percentage, options.seed);
+			sample = make_uniq<ReservoirSamplePercentage>(allocator, percentage, options.seed);
 		} else {
 			auto size = options.sample_size.GetValue<int64_t>();
 			if (size == 0) {
 				return;
 			}
-			sample = make_unique<ReservoirSample>(size, options.seed);
+			sample = make_uniq<ReservoirSample>(allocator, size, options.seed);
 		}
 	}
 
@@ -31,12 +31,12 @@ public:
 };
 
 unique_ptr<GlobalSinkState> PhysicalReservoirSample::GetGlobalSinkState(ClientContext &context) const {
-	return make_unique<SampleGlobalSinkState>(*options);
+	return make_uniq<SampleGlobalSinkState>(Allocator::Get(context), *options);
 }
 
-SinkResultType PhysicalReservoirSample::Sink(ExecutionContext &context, GlobalSinkState &state, LocalSinkState &lstate,
-                                             DataChunk &input) const {
-	auto &gstate = (SampleGlobalSinkState &)state;
+SinkResultType PhysicalReservoirSample::Sink(ExecutionContext &context, DataChunk &chunk,
+                                             OperatorSinkInput &input) const {
+	auto &gstate = input.global_state.Cast<SampleGlobalSinkState>();
 	if (!gstate.sample) {
 		return SinkResultType::FINISHED;
 	}
@@ -44,24 +44,26 @@ SinkResultType PhysicalReservoirSample::Sink(ExecutionContext &context, GlobalSi
 	// the algorithm is adopted from the paper Weighted random sampling with a reservoir by Pavlos S. Efraimidis et al.
 	// note that the original algorithm is about weighted sampling; this is a simplified approach for uniform sampling
 	lock_guard<mutex> glock(gstate.lock);
-	gstate.sample->AddToReservoir(input);
+	gstate.sample->AddToReservoir(chunk);
 	return SinkResultType::NEED_MORE_INPUT;
 }
 
 //===--------------------------------------------------------------------===//
 // Source
 //===--------------------------------------------------------------------===//
-void PhysicalReservoirSample::GetData(ExecutionContext &context, DataChunk &chunk, GlobalSourceState &gstate,
-                                      LocalSourceState &lstate) const {
-	auto &sink = (SampleGlobalSinkState &)*this->sink_state;
+SourceResultType PhysicalReservoirSample::GetData(ExecutionContext &context, DataChunk &chunk,
+                                                  OperatorSourceInput &input) const {
+	auto &sink = this->sink_state->Cast<SampleGlobalSinkState>();
 	if (!sink.sample) {
-		return;
+		return SourceResultType::FINISHED;
 	}
 	auto sample_chunk = sink.sample->GetChunk();
 	if (!sample_chunk) {
-		return;
+		return SourceResultType::FINISHED;
 	}
 	chunk.Move(*sample_chunk);
+
+	return SourceResultType::HAVE_MORE_OUTPUT;
 }
 
 string PhysicalReservoirSample::ParamsToString() const {

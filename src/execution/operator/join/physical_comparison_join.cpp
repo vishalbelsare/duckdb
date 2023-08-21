@@ -1,5 +1,6 @@
 #include "duckdb/execution/operator/join/physical_comparison_join.hpp"
 #include "duckdb/common/types/chunk_collection.hpp"
+#include "duckdb/common/enum_util.hpp"
 
 namespace duckdb {
 
@@ -24,11 +25,13 @@ PhysicalComparisonJoin::PhysicalComparisonJoin(LogicalOperator &op, PhysicalOper
 }
 
 string PhysicalComparisonJoin::ParamsToString() const {
-	string extra_info = JoinTypeToString(join_type) + "\n";
+	string extra_info = EnumUtil::ToString(join_type) + "\n";
 	for (auto &it : conditions) {
 		string op = ExpressionTypeToOperator(it.comparison);
-		extra_info += it.left->GetName() + op + it.right->GetName() + "\n";
+		extra_info += it.left->GetName() + " " + op + " " + it.right->GetName() + "\n";
 	}
+	extra_info += "\n[INFOSEPARATOR]\n";
+	extra_info += StringUtil::Format("EC: %llu\n", estimated_cardinality);
 	return extra_info;
 }
 
@@ -77,35 +80,4 @@ void PhysicalComparisonJoin::ConstructEmptyJoinResult(JoinType join_type, bool h
 		}
 	}
 }
-
-void PhysicalComparisonJoin::ConstructFullOuterJoinResult(bool *found_match, ChunkCollection &input, DataChunk &result,
-                                                          idx_t &scan_position) {
-	// fill in NULL values for the LHS
-	SelectionVector rsel(STANDARD_VECTOR_SIZE);
-	while (scan_position < input.Count()) {
-		auto &rhs_chunk = input.GetChunk(scan_position / STANDARD_VECTOR_SIZE);
-		idx_t result_count = 0;
-		// figure out which tuples didn't find a match in the RHS
-		for (idx_t i = 0; i < rhs_chunk.size(); i++) {
-			if (!found_match[scan_position + i]) {
-				rsel.set_index(result_count++, i);
-			}
-		}
-		scan_position += STANDARD_VECTOR_SIZE;
-		if (result_count > 0) {
-			// if there were any tuples that didn't find a match, output them
-			idx_t left_column_count = result.ColumnCount() - input.ColumnCount();
-			for (idx_t i = 0; i < left_column_count; i++) {
-				result.data[i].SetVectorType(VectorType::CONSTANT_VECTOR);
-				ConstantVector::SetNull(result.data[i], true);
-			}
-			for (idx_t col_idx = 0; col_idx < rhs_chunk.ColumnCount(); col_idx++) {
-				result.data[left_column_count + col_idx].Slice(rhs_chunk.data[col_idx], rsel, result_count);
-			}
-			result.SetCardinality(result_count);
-			return;
-		}
-	}
-}
-
 } // namespace duckdb

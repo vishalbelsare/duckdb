@@ -30,6 +30,10 @@
 #include "parser/scansup.hpp"
 #include "mb/pg_wchar.hpp"
 
+#ifdef __MVS__
+#include <zos-tls.h>
+#endif
+
 namespace duckdb_libpgquery {
 
 /* ----------------
@@ -60,6 +64,21 @@ char *downcase_truncate_identifier(const char *ident, int len, bool warn) {
 	return downcase_identifier(ident, len, warn, true);
 }
 
+#ifdef __MVS__
+static __tlssim<bool> pg_preserve_identifier_case_impl(false);
+#define pg_preserve_identifier_case (*pg_preserve_identifier_case_impl.access())
+#else
+static __thread bool pg_preserve_identifier_case = false;
+#endif
+
+void set_preserve_identifier_case(bool preserve) {
+	pg_preserve_identifier_case = preserve;
+}
+
+bool get_preserve_identifier_case() {
+	return pg_preserve_identifier_case;
+}
+
 /*
  * a workhorse for downcase_truncate_identifier
  */
@@ -83,10 +102,12 @@ char *downcase_identifier(const char *ident, int len, bool warn, bool truncate) 
 	for (i = 0; i < len; i++) {
 		unsigned char ch = (unsigned char)ident[i];
 
-		if (ch >= 'A' && ch <= 'Z')
-			ch += 'a' - 'A';
-		else if (enc_is_single_byte && IS_HIGHBIT_SET(ch) && isupper(ch))
-			ch = tolower(ch);
+		if (!get_preserve_identifier_case()) {
+			if (ch >= 'A' && ch <= 'Z')
+				ch += 'a' - 'A';
+			else if (enc_is_single_byte && IS_HIGHBIT_SET(ch) && isupper(ch))
+				ch = tolower(ch);
+		}
 		result[i] = (char)ch;
 	}
 	result[i] = '\0';

@@ -1,7 +1,9 @@
 #include "duckdb/parser/expression/subquery_expression.hpp"
 
 #include "duckdb/common/exception.hpp"
-#include "duckdb/common/serializer.hpp"
+#include "duckdb/common/field_writer.hpp"
+#include "duckdb/common/serializer/format_deserializer.hpp"
+#include "duckdb/common/serializer/format_serializer.hpp"
 
 namespace duckdb {
 
@@ -11,48 +13,65 @@ SubqueryExpression::SubqueryExpression()
 }
 
 string SubqueryExpression::ToString() const {
-	return "SUBQUERY";
+	switch (subquery_type) {
+	case SubqueryType::ANY:
+		return "(" + child->ToString() + " " + ExpressionTypeToOperator(comparison_type) + " ANY(" +
+		       subquery->ToString() + "))";
+	case SubqueryType::EXISTS:
+		return "EXISTS(" + subquery->ToString() + ")";
+	case SubqueryType::NOT_EXISTS:
+		return "NOT EXISTS(" + subquery->ToString() + ")";
+	case SubqueryType::SCALAR:
+		return "(" + subquery->ToString() + ")";
+	default:
+		throw InternalException("Unrecognized type for subquery");
+	}
 }
 
-bool SubqueryExpression::Equals(const SubqueryExpression *a, const SubqueryExpression *b) {
-	if (!a->subquery || !b->subquery) {
+bool SubqueryExpression::Equal(const SubqueryExpression &a, const SubqueryExpression &b) {
+	if (!a.subquery || !b.subquery) {
 		return false;
 	}
-	if (!BaseExpression::Equals(a->child.get(), b->child.get())) {
+	if (!ParsedExpression::Equals(a.child, b.child)) {
 		return false;
 	}
-	return a->comparison_type == b->comparison_type && a->subquery_type == b->subquery_type &&
-	       a->subquery->Equals(b->subquery.get());
+	return a.comparison_type == b.comparison_type && a.subquery_type == b.subquery_type &&
+	       a.subquery->Equals(*b.subquery);
 }
 
 unique_ptr<ParsedExpression> SubqueryExpression::Copy() const {
-	auto copy = make_unique<SubqueryExpression>();
+	auto copy = make_uniq<SubqueryExpression>();
 	copy->CopyProperties(*this);
 	copy->subquery = unique_ptr_cast<SQLStatement, SelectStatement>(subquery->Copy());
 	copy->subquery_type = subquery_type;
 	copy->child = child ? child->Copy() : nullptr;
 	copy->comparison_type = comparison_type;
-	return move(copy);
+	return std::move(copy);
 }
 
-void SubqueryExpression::Serialize(Serializer &serializer) {
-	ParsedExpression::Serialize(serializer);
-	serializer.Write<SubqueryType>(subquery_type);
+void SubqueryExpression::Serialize(FieldWriter &writer) const {
+	auto &serializer = writer.GetSerializer();
+
+	writer.WriteField<SubqueryType>(subquery_type);
+	// FIXME: this shouldn't use a serializer (probably)?
 	subquery->Serialize(serializer);
-	serializer.WriteOptional(child);
-	serializer.Write<ExpressionType>(comparison_type);
+	writer.WriteOptional(child);
+	writer.WriteField<ExpressionType>(comparison_type);
 }
 
-unique_ptr<ParsedExpression> SubqueryExpression::Deserialize(ExpressionType type, Deserializer &source) {
-	auto subquery_type = source.Read<SubqueryType>();
+unique_ptr<ParsedExpression> SubqueryExpression::Deserialize(ExpressionType type, FieldReader &reader) {
+	// FIXME: this shouldn't use a source
+	auto &source = reader.GetSource();
+
+	auto subquery_type = reader.ReadRequired<SubqueryType>();
 	auto subquery = SelectStatement::Deserialize(source);
 
-	auto expression = make_unique<SubqueryExpression>();
+	auto expression = make_uniq<SubqueryExpression>();
 	expression->subquery_type = subquery_type;
-	expression->subquery = move(subquery);
-	expression->child = source.ReadOptional<ParsedExpression>();
-	expression->comparison_type = source.Read<ExpressionType>();
-	return move(expression);
+	expression->subquery = std::move(subquery);
+	expression->child = reader.ReadOptional<ParsedExpression>(nullptr);
+	expression->comparison_type = reader.ReadRequired<ExpressionType>();
+	return std::move(expression);
 }
 
 } // namespace duckdb

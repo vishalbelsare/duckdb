@@ -8,6 +8,7 @@
 #include "duckdb/common/chrono.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/multiply.hpp"
+#include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/common/limits.hpp"
 #include <ctime>
 
@@ -20,15 +21,56 @@ static_assert(sizeof(timestamp_t) == sizeof(int64_t), "timestamp_t was padded");
 // T may be a space
 // Z is optional
 // ISO 8601
-bool Timestamp::TryConvertTimestamp(const char *str, idx_t len, timestamp_t &result) {
+
+// arithmetic operators
+timestamp_t timestamp_t::operator+(const double &value) const {
+	timestamp_t result;
+	if (!TryAddOperator::Operation(this->value, int64_t(value), result.value)) {
+		throw OutOfRangeException("Overflow in timestamp addition");
+	}
+	return result;
+}
+
+int64_t timestamp_t::operator-(const timestamp_t &other) const {
+	int64_t result;
+	if (!TrySubtractOperator::Operation(value, int64_t(other.value), result)) {
+		throw OutOfRangeException("Overflow in timestamp subtraction");
+	}
+	return result;
+}
+
+// in-place operators
+timestamp_t &timestamp_t::operator+=(const int64_t &delta) {
+	if (!TryAddOperator::Operation(value, delta, value)) {
+		throw OutOfRangeException("Overflow in timestamp increment");
+	}
+	return *this;
+}
+
+timestamp_t &timestamp_t::operator-=(const int64_t &delta) {
+	if (!TrySubtractOperator::Operation(value, delta, value)) {
+		throw OutOfRangeException("Overflow in timestamp decrement");
+	}
+	return *this;
+}
+
+bool Timestamp::TryConvertTimestampTZ(const char *str, idx_t len, timestamp_t &result, bool &has_offset, string_t &tz) {
 	idx_t pos;
 	date_t date;
 	dtime_t time;
-	if (!Date::TryConvertDate(str, len, pos, date)) {
+	has_offset = false;
+	if (!Date::TryConvertDate(str, len, pos, date, has_offset)) {
 		return false;
 	}
 	if (pos == len) {
-		// no time: only a date
+		// no time: only a date or special
+		if (date == date_t::infinity()) {
+			result = timestamp_t::infinity();
+			return true;
+		} else if (date == date_t::ninfinity()) {
+			result = timestamp_t::ninfinity();
+			return true;
+		}
 		return Timestamp::TryFromDatetime(date, dtime_t(0), result);
 	}
 	// try to parse a time field
@@ -45,12 +87,30 @@ bool Timestamp::TryConvertTimestamp(const char *str, idx_t len, timestamp_t &res
 	}
 	if (pos < len) {
 		// skip a "Z" at the end (as per the ISO8601 specs)
+		int hour_offset, minute_offset;
 		if (str[pos] == 'Z') {
 			pos++;
-		}
-		int hour_offset, minute_offset;
-		if (Timestamp::TryParseUTCOffset(str, pos, len, hour_offset, minute_offset)) {
-			result -= hour_offset * Interval::MICROS_PER_HOUR + minute_offset * Interval::MICROS_PER_MINUTE;
+			has_offset = true;
+		} else if (Timestamp::TryParseUTCOffset(str, pos, len, hour_offset, minute_offset)) {
+			const int64_t delta = hour_offset * Interval::MICROS_PER_HOUR + minute_offset * Interval::MICROS_PER_MINUTE;
+			if (!TrySubtractOperator::Operation(result.value, delta, result.value)) {
+				return false;
+			}
+			has_offset = true;
+		} else {
+			// Parse a time zone: / [A-Za-z0-9/_]+/
+			if (str[pos++] != ' ') {
+				return false;
+			}
+			auto tz_name = str + pos;
+			for (; pos < len && CharacterIsTimeZone(str[pos]); ++pos) {
+				continue;
+			}
+			auto tz_len = str + pos - tz_name;
+			if (tz_len) {
+				tz = string_t(tz_name, tz_len);
+			}
+			// Note that the caller must reinterpret the instant we return to the given time zone
 		}
 
 		// skip any spaces at the end
@@ -64,9 +124,38 @@ bool Timestamp::TryConvertTimestamp(const char *str, idx_t len, timestamp_t &res
 	return true;
 }
 
+TimestampCastResult Timestamp::TryConvertTimestamp(const char *str, idx_t len, timestamp_t &result) {
+	string_t tz(nullptr, 0);
+	bool has_offset = false;
+	// We don't understand TZ without an extension, so fail if one was provided.
+	auto success = TryConvertTimestampTZ(str, len, result, has_offset, tz);
+	if (!success) {
+		return TimestampCastResult::ERROR_INCORRECT_FORMAT;
+	}
+	if (tz.GetSize() == 0) {
+		// no timezone provided - success!
+		return TimestampCastResult::SUCCESS;
+	}
+	if (tz.GetSize() == 3) {
+		// we can ONLY handle UTC without ICU being loaded
+		auto tz_ptr = tz.GetData();
+		if ((tz_ptr[0] == 'u' || tz_ptr[0] == 'U') && (tz_ptr[1] == 't' || tz_ptr[1] == 'T') &&
+		    (tz_ptr[2] == 'c' || tz_ptr[2] == 'C')) {
+			return TimestampCastResult::SUCCESS;
+		}
+	}
+	return TimestampCastResult::ERROR_NON_UTC_TIMEZONE;
+}
+
 string Timestamp::ConversionError(const string &str) {
 	return StringUtil::Format("timestamp field value out of range: \"%s\", "
-	                          "expected format is (YYYY-MM-DD HH:MM:SS[.MS])",
+	                          "expected format is (YYYY-MM-DD HH:MM:SS[.US][±HH:MM| ZONE])",
+	                          str);
+}
+
+string Timestamp::UnsupportedTimezoneError(const string &str) {
+	return StringUtil::Format("timestamp field value \"%s\" has a timestamp that is not UTC.\nUse the TIMESTAMPTZ type "
+	                          "with the ICU extension loaded to handle non-UTC timestamps.",
 	                          str);
 }
 
@@ -74,12 +163,21 @@ string Timestamp::ConversionError(string_t str) {
 	return Timestamp::ConversionError(str.GetString());
 }
 
+string Timestamp::UnsupportedTimezoneError(string_t str) {
+	return Timestamp::UnsupportedTimezoneError(str.GetString());
+}
+
 timestamp_t Timestamp::FromCString(const char *str, idx_t len) {
 	timestamp_t result;
-	if (!Timestamp::TryConvertTimestamp(str, len, result)) {
+	auto cast_result = Timestamp::TryConvertTimestamp(str, len, result);
+	if (cast_result == TimestampCastResult::SUCCESS) {
+		return result;
+	}
+	if (cast_result == TimestampCastResult::ERROR_NON_UTC_TIMEZONE) {
+		throw ConversionException(Timestamp::UnsupportedTimezoneError(string(str, len)));
+	} else {
 		throw ConversionException(Timestamp::ConversionError(string(str, len)));
 	}
-	return result;
 }
 
 bool Timestamp::TryParseUTCOffset(const char *str, idx_t &pos, idx_t len, int &hour_offset, int &minute_offset) {
@@ -135,6 +233,11 @@ timestamp_t Timestamp::FromString(const string &str) {
 }
 
 string Timestamp::ToString(timestamp_t timestamp) {
+	if (timestamp == timestamp_t::infinity()) {
+		return Date::PINF;
+	} else if (timestamp == timestamp_t::ninfinity()) {
+		return Date::NINF;
+	}
 	date_t date;
 	dtime_t time;
 	Timestamp::Convert(timestamp, date, time);
@@ -142,10 +245,18 @@ string Timestamp::ToString(timestamp_t timestamp) {
 }
 
 date_t Timestamp::GetDate(timestamp_t timestamp) {
+	if (timestamp == timestamp_t::infinity()) {
+		return date_t::infinity();
+	} else if (timestamp == timestamp_t::ninfinity()) {
+		return date_t::ninfinity();
+	}
 	return date_t((timestamp.value + (timestamp.value < 0)) / Interval::MICROS_PER_DAY - (timestamp.value < 0));
 }
 
 dtime_t Timestamp::GetTime(timestamp_t timestamp) {
+	if (!IsFinite(timestamp)) {
+		throw ConversionException("Can't get TIME of infinite TIMESTAMP");
+	}
 	date_t date = Timestamp::GetDate(timestamp);
 	return dtime_t(timestamp.value - (int64_t(date.days) * int64_t(Interval::MICROS_PER_DAY)));
 }
@@ -157,7 +268,7 @@ bool Timestamp::TryFromDatetime(date_t date, dtime_t time, timestamp_t &result) 
 	if (!TryAddOperator::Operation<int64_t, int64_t, int64_t>(result.value, time.micros, result.value)) {
 		return false;
 	}
-	return true;
+	return Timestamp::IsFinite(result);
 }
 
 timestamp_t Timestamp::FromDatetime(date_t date, dtime_t time) {
@@ -170,7 +281,12 @@ timestamp_t Timestamp::FromDatetime(date_t date, dtime_t time) {
 
 void Timestamp::Convert(timestamp_t timestamp, date_t &out_date, dtime_t &out_time) {
 	out_date = GetDate(timestamp);
-	out_time = dtime_t(timestamp.value - (int64_t(out_date.days) * int64_t(Interval::MICROS_PER_DAY)));
+	int64_t days_micros;
+	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(out_date.days, Interval::MICROS_PER_DAY,
+	                                                               days_micros)) {
+		throw ConversionException("Date out of range in timestamp conversion");
+	}
+	out_time = dtime_t(timestamp.value - days_micros);
 	D_ASSERT(timestamp == Timestamp::FromDatetime(out_date, out_time));
 }
 

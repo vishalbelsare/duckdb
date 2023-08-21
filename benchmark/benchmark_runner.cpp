@@ -28,7 +28,7 @@ Benchmark::Benchmark(bool register_benchmark, string name, string group) : name(
 }
 
 static void listFiles(FileSystem &fs, const string &path, std::function<void(const string &)> cb) {
-	fs.ListFiles(path, [&](string fname, bool is_dir) {
+	fs.ListFiles(path, [&](const string &fname, bool is_dir) {
 		string full_path = fs.JoinPath(path, fname);
 		if (is_dir) {
 			// recurse into directory
@@ -47,36 +47,12 @@ static bool endsWith(const string &mainStr, const string &toMatch) {
 BenchmarkRunner::BenchmarkRunner() {
 }
 
-void BenchmarkRunner::SaveDatabase(DuckDB &db, string name) {
-	auto &fs = db.GetFileSystem();
+void BenchmarkRunner::InitializeBenchmarkDirectory() {
+	auto fs = FileSystem::CreateLocal();
 	// check if the database directory exists; if not create it
-	if (!fs.DirectoryExists(DUCKDB_BENCHMARK_DIRECTORY)) {
-		fs.CreateDirectory(DUCKDB_BENCHMARK_DIRECTORY);
+	if (!fs->DirectoryExists(DUCKDB_BENCHMARK_DIRECTORY)) {
+		fs->CreateDirectory(DUCKDB_BENCHMARK_DIRECTORY);
 	}
-	Connection con(db);
-	auto result = con.Query(
-	    StringUtil::Format("EXPORT DATABASE '%s' (FORMAT CSV)", fs.JoinPath(DUCKDB_BENCHMARK_DIRECTORY, name)));
-	if (!result->success) {
-		throw Exception("Failed to save database: " + result->error);
-	}
-}
-
-bool BenchmarkRunner::TryLoadDatabase(DuckDB &db, string name) {
-	auto &fs = db.GetFileSystem();
-	if (!fs.DirectoryExists(DUCKDB_BENCHMARK_DIRECTORY)) {
-		return false;
-	}
-	string base_dir = fs.JoinPath(DUCKDB_BENCHMARK_DIRECTORY, name);
-	// check if the [name]/schema.sql file exists
-	if (!fs.FileExists(fs.JoinPath(base_dir, "schema.sql"))) {
-		return false;
-	}
-	Connection con(db);
-	auto result = con.Query(StringUtil::Format("IMPORT DATABASE '%s'", base_dir));
-	if (!result->success) {
-		throw Exception("Failed to load database: " + result->error);
-	}
-	return true;
 }
 
 atomic<bool> is_active;
@@ -122,11 +98,9 @@ void BenchmarkRunner::LogOutput(string message) {
 }
 
 void BenchmarkRunner::RunBenchmark(Benchmark *benchmark) {
-	Profiler<system_clock> profiler;
+	Profiler profiler;
 	auto display_name = benchmark->DisplayName();
-	// LogLine(string(display_name.size() + 6, '-'));
-	// LogLine("|| " + display_name + " ||");
-	// LogLine(string(display_name.size() + 6, '-'));
+
 	auto state = benchmark->Initialize(configuration);
 	auto nruns = benchmark->NRuns();
 	for (size_t i = 0; i < nruns + 1; i++) {
@@ -144,8 +118,6 @@ void BenchmarkRunner::RunBenchmark(Benchmark *benchmark) {
 		profiler.Start();
 		benchmark->Run(state.get());
 		profiler.End();
-
-		benchmark->Cleanup(state.get());
 
 		is_active = false;
 		interrupt_thread.join();
@@ -168,13 +140,14 @@ void BenchmarkRunner::RunBenchmark(Benchmark *benchmark) {
 				}
 			}
 		}
+		benchmark->Cleanup(state.get());
 	}
 	benchmark->Finalize();
 }
 
 void BenchmarkRunner::RunBenchmarks() {
 	LogLine("Starting benchmark run.");
-	LogLine("name\trun\tnruns\ttiming");
+	LogLine("name\trun\ttiming");
 	for (auto &benchmark : benchmarks) {
 		RunBenchmark(benchmark);
 	}
@@ -191,6 +164,8 @@ void print_help() {
 	fprintf(stderr, "              --log=[file]           Move log output to file\n");
 	fprintf(stderr, "              --info                 Prints info about the benchmark\n");
 	fprintf(stderr, "              --query                Prints query of the benchmark\n");
+	fprintf(stderr, "              --root-dir             Sets the root directory for where to store temp data and "
+	                "look for the 'benchmarks' directory\n");
 	fprintf(stderr,
 	        "              [name_pattern]         Run only the benchmark which names match the specified name pattern, "
 	        "e.g., DS.* for TPC-DS benchmarks\n");
@@ -198,16 +173,36 @@ void print_help() {
 
 enum ConfigurationError { None, BenchmarkNotFound, InfoWithoutBenchmarkName };
 
-void LoadInterpretedBenchmarks() {
+void LoadInterpretedBenchmarks(FileSystem &fs) {
 	// load interpreted benchmarks
-	unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
-	listFiles(*fs, "benchmark", [](string path) {
+	listFiles(fs, "benchmark", [](const string &path) {
 		if (endsWith(path, ".benchmark")) {
 			new InterpretedBenchmark(path);
 		}
 	});
 }
 
+string parse_root_dir_or_default(const int arg_counter, char const *const *arg_values, FileSystem &fs) {
+	// check if the user specified a different root directory
+	for (int arg_index = 1; arg_index < arg_counter; ++arg_index) {
+		string arg = arg_values[arg_index];
+		if (arg == "--root-dir") {
+			if (arg_index + 1 >= arg_counter) {
+				fprintf(stderr, "Missing argument for --root-dir\n");
+				print_help();
+				exit(1);
+			}
+			auto path = arg_values[arg_index + 1];
+			if (fs.IsPathAbsolute(path)) {
+				return path;
+			} else {
+				return fs.JoinPath(FileSystem::GetWorkingDirectory(), path);
+			}
+		}
+	}
+	// default root directory is the duckdb root directory
+	return DUCKDB_ROOT_DIRECTORY;
+}
 /**
  * Builds a configuration based on the passed arguments.
  */
@@ -234,7 +229,10 @@ void parse_arguments(const int arg_counter, char const *const *arg_values) {
 		} else if (StringUtil::StartsWith(arg, "--threads=")) {
 			// write info of benchmark
 			auto splits = StringUtil::Split(arg, '=');
-			instance.threads = Value(splits[1]).CastAs(LogicalType::UINTEGER).GetValue<uint32_t>();
+			instance.threads = Value(splits[1]).DefaultCastAs(LogicalType::UINTEGER).GetValue<uint32_t>();
+		} else if (arg == "--root-dir") {
+			// We've already handled this, skip it
+			arg_index++;
 		} else if (arg == "--query") {
 			// write group of benchmark
 			instance.configuration.meta = BenchmarkMetaType::QUERY;
@@ -266,6 +264,8 @@ void parse_arguments(const int arg_counter, char const *const *arg_values) {
  * Returns an configuration error code.
  */
 ConfigurationError run_benchmarks() {
+	BenchmarkRunner::InitializeBenchmarkDirectory();
+
 	auto &instance = BenchmarkRunner::GetInstance();
 	auto &benchmarks = instance.benchmarks;
 	if (!instance.configuration.name_pattern.empty()) {
@@ -334,13 +334,17 @@ void print_error_message(const ConfigurationError &error) {
 }
 
 int main(int argc, char **argv) {
-	FileSystem::SetWorkingDirectory(DUCKDB_ROOT_DIRECTORY);
+	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+	// Set the working directory. We need to scan this before loading the benchmarks or parsing the other arguments
+	string root_dir = parse_root_dir_or_default(argc, argv, *fs);
+	FileSystem::SetWorkingDirectory(root_dir);
 	// load interpreted benchmarks before doing anything else
-	LoadInterpretedBenchmarks();
+	LoadInterpretedBenchmarks(*fs);
 	parse_arguments(argc, argv);
 	const auto configuration_error = run_benchmarks();
 	if (configuration_error != ConfigurationError::None) {
 		print_error_message(configuration_error);
 		exit(1);
 	}
+	return 0;
 }

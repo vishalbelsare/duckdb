@@ -15,22 +15,31 @@ namespace duckdb {
 
 class ListColumnReader : public ColumnReader {
 public:
+	static constexpr const PhysicalType TYPE = PhysicalType::LIST;
+
+public:
 	ListColumnReader(ParquetReader &reader, LogicalType type_p, const SchemaElement &schema_p, idx_t schema_idx_p,
 	                 idx_t max_define_p, idx_t max_repeat_p, unique_ptr<ColumnReader> child_column_reader_p);
 
-	idx_t Read(uint64_t num_values, parquet_filter_t &filter, uint8_t *define_out, uint8_t *repeat_out,
+	idx_t Read(uint64_t num_values, parquet_filter_t &filter, data_ptr_t define_out, data_ptr_t repeat_out,
 	           Vector &result_out) override;
 
-	virtual void Skip(idx_t num_values) override {
-		D_ASSERT(0);
-	}
+	void ApplyPendingSkips(idx_t num_values) override;
 
-	void InitializeRead(const std::vector<ColumnChunk> &columns, TProtocol &protocol_p) override {
-		child_column_reader->InitializeRead(columns, protocol_p);
+	void InitializeRead(idx_t row_group_idx_p, const vector<ColumnChunk> &columns, TProtocol &protocol_p) override {
+		child_column_reader->InitializeRead(row_group_idx_p, columns, protocol_p);
 	}
 
 	idx_t GroupRowsAvailable() override {
 		return child_column_reader->GroupRowsAvailable() + overflow_child_count;
+	}
+
+	uint64_t TotalCompressedSize() override {
+		return child_column_reader->TotalCompressedSize();
+	}
+
+	void RegisterPrefetch(ThriftFileTransport &transport, bool allow_merge) override {
+		child_column_reader->RegisterPrefetch(transport, allow_merge);
 	}
 
 private:

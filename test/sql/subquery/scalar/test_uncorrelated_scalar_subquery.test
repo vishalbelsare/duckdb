@@ -3,6 +3,9 @@
 # group: [scalar]
 
 statement ok
+SET default_null_order='nulls_first';
+
+statement ok
 PRAGMA enable_verification
 
 statement ok
@@ -120,7 +123,7 @@ SELECT (SELECT i FROM integers WHERE i=1)
 1
 
 query I
-SELECT * FROM integers WHERE i > (SELECT i FROM integers WHERE i=1)
+SELECT * FROM integers WHERE i > (SELECT i FROM integers WHERE i=1) ORDER BY 1
 ----
 2
 3

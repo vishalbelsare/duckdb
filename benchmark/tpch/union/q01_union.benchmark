@@ -1,4 +1,4 @@
-# name: benchmark/tpch/union/union_into_aggregate.benchmark
+# name: benchmark/tpch/union/q01_union.benchmark
 # description: Union of separate tables into a single aggregate
 # group: [union]
 
@@ -8,7 +8,7 @@ subgroup tpch
 
 require tpch
 
-cache tpch_sf1
+cache tpch_sf1.duckdb
 
 load
 CALL dbgen(sf=1);

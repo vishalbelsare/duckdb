@@ -2,6 +2,8 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/main/config.hpp"
+#include "duckdb/common/multi_file_reader.hpp"
 
 namespace duckdb {
 
@@ -9,36 +11,29 @@ struct GlobFunctionBindData : public TableFunctionData {
 	vector<string> files;
 };
 
-static unique_ptr<FunctionData> GlobFunctionBind(ClientContext &context, vector<Value> &inputs,
-                                                 unordered_map<string, Value> &named_parameters,
-                                                 vector<LogicalType> &input_table_types,
-                                                 vector<string> &input_table_names, vector<LogicalType> &return_types,
-                                                 vector<string> &names) {
-	auto result = make_unique<GlobFunctionBindData>();
-	auto &fs = FileSystem::GetFileSystem(context);
-	result->files = fs.Glob(inputs[0].str_value);
-	return_types.push_back(LogicalType::VARCHAR);
+static unique_ptr<FunctionData> GlobFunctionBind(ClientContext &context, TableFunctionBindInput &input,
+                                                 vector<LogicalType> &return_types, vector<string> &names) {
+	auto result = make_uniq<GlobFunctionBindData>();
+	result->files = MultiFileReader::GetFileList(context, input.inputs[0], "Globbing", FileGlobOptions::ALLOW_EMPTY);
+	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("file");
-	return move(result);
+	return std::move(result);
 }
 
-struct GlobFunctionState : public FunctionOperatorData {
+struct GlobFunctionState : public GlobalTableFunctionState {
 	GlobFunctionState() : current_idx(0) {
 	}
 
 	idx_t current_idx;
 };
 
-static unique_ptr<FunctionOperatorData> GlobFunctionInit(ClientContext &context, const FunctionData *bind_data,
-                                                         const vector<column_t> &column_ids,
-                                                         TableFilterCollection *filters) {
-	return make_unique<GlobFunctionState>();
+static unique_ptr<GlobalTableFunctionState> GlobFunctionInit(ClientContext &context, TableFunctionInitInput &input) {
+	return make_uniq<GlobFunctionState>();
 }
 
-static void GlobFunction(ClientContext &context, const FunctionData *bind_data_p, FunctionOperatorData *state_p,
-                         DataChunk *input, DataChunk &output) {
-	auto &bind_data = (GlobFunctionBindData &)*bind_data_p;
-	auto &state = (GlobFunctionState &)*state_p;
+static void GlobFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &bind_data = data_p.bind_data->Cast<GlobFunctionBindData>();
+	auto &state = data_p.global_state->Cast<GlobFunctionState>();
 
 	idx_t count = 0;
 	idx_t next_idx = MinValue<idx_t>(state.current_idx + STANDARD_VECTOR_SIZE, bind_data.files.size());
@@ -50,9 +45,8 @@ static void GlobFunction(ClientContext &context, const FunctionData *bind_data_p
 }
 
 void GlobTableFunction::RegisterFunction(BuiltinFunctions &set) {
-	TableFunctionSet glob("glob");
-	glob.AddFunction(TableFunction({LogicalType::VARCHAR}, GlobFunction, GlobFunctionBind, GlobFunctionInit));
-	set.AddFunction(glob);
+	TableFunction glob_function("glob", {LogicalType::VARCHAR}, GlobFunction, GlobFunctionBind, GlobFunctionInit);
+	set.AddFunction(MultiFileReader::CreateFunctionSet(glob_function));
 }
 
 } // namespace duckdb

@@ -1,8 +1,11 @@
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/algorithm.hpp"
+#include "duckdb/common/hugeint.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/windows_undefs.hpp"
+#include "duckdb/common/types/value.hpp"
+#include "duckdb/common/operator/cast_operators.hpp"
 
 #include <cmath>
 #include <limits>
@@ -499,6 +502,13 @@ bool Hugeint::TryConvert(int8_t value, hugeint_t &result) {
 }
 
 template <>
+bool Hugeint::TryConvert(const char *value, hugeint_t &result) {
+	auto len = strlen(value);
+	string_t string_val(value, len);
+	return TryCast::Operation<string_t, hugeint_t>(string_val, result, true);
+}
+
+template <>
 bool Hugeint::TryConvert(int16_t value, hugeint_t &result) {
 	result = HugeintConvertInteger<int16_t>(value);
 	return true;
@@ -537,12 +547,21 @@ bool Hugeint::TryConvert(uint64_t value, hugeint_t &result) {
 }
 
 template <>
+bool Hugeint::TryConvert(hugeint_t value, hugeint_t &result) {
+	result = value;
+	return true;
+}
+
+template <>
 bool Hugeint::TryConvert(float value, hugeint_t &result) {
 	return Hugeint::TryConvert(double(value), result);
 }
 
 template <class REAL_T>
 bool ConvertFloatingToBigint(REAL_T value, hugeint_t &result) {
+	if (!Value::IsFinite<REAL_T>(value)) {
+		return false;
+	}
 	if (value <= -170141183460469231731687303715884105728.0 || value >= 170141183460469231731687303715884105727.0) {
 		return false;
 	}
@@ -626,26 +645,23 @@ hugeint_t hugeint_t::operator-() const {
 }
 
 hugeint_t hugeint_t::operator>>(const hugeint_t &rhs) const {
-	if (upper < 0) {
-		return hugeint_t(0);
-	}
 	hugeint_t result;
 	uint64_t shift = rhs.lower;
 	if (rhs.upper != 0 || shift >= 128) {
 		return hugeint_t(0);
-	} else if (shift == 64) {
-		result.upper = 0;
-		result.lower = upper;
 	} else if (shift == 0) {
 		return *this;
+	} else if (shift == 64) {
+		result.upper = (upper < 0) ? -1 : 0;
+		result.lower = upper;
 	} else if (shift < 64) {
-		// perform upper shift in unsigned integer, and mask away the most significant bit
-		result.lower = (uint64_t(upper) << (64 - shift)) + (lower >> shift);
-		result.upper = uint64_t(upper) >> shift;
+		// perform lower shift in unsigned integer, and mask away the most significant bit
+		result.lower = (uint64_t(upper) << (64 - shift)) | (lower >> shift);
+		result.upper = upper >> shift;
 	} else {
 		D_ASSERT(shift < 128);
-		result.lower = uint64_t(upper) >> (shift - 64);
-		result.upper = 0;
+		result.lower = upper >> (shift - 64);
+		result.upper = (upper < 0) ? -1 : 0;
 	}
 	return result;
 }
@@ -746,6 +762,45 @@ hugeint_t &hugeint_t::operator^=(const hugeint_t &rhs) {
 	lower ^= rhs.lower;
 	upper ^= rhs.upper;
 	return *this;
+}
+
+bool hugeint_t::operator!() const {
+	return *this == 0;
+}
+
+hugeint_t::operator bool() const {
+	return *this != 0;
+}
+
+template <class T>
+static T NarrowCast(const hugeint_t &input) {
+	// NarrowCast is supposed to truncate (take lower)
+	return static_cast<T>(input.lower);
+}
+
+hugeint_t::operator uint8_t() const {
+	return NarrowCast<uint8_t>(*this);
+}
+hugeint_t::operator uint16_t() const {
+	return NarrowCast<uint16_t>(*this);
+}
+hugeint_t::operator uint32_t() const {
+	return NarrowCast<uint32_t>(*this);
+}
+hugeint_t::operator uint64_t() const {
+	return NarrowCast<uint64_t>(*this);
+}
+hugeint_t::operator int8_t() const {
+	return NarrowCast<int8_t>(*this);
+}
+hugeint_t::operator int16_t() const {
+	return NarrowCast<int16_t>(*this);
+}
+hugeint_t::operator int32_t() const {
+	return NarrowCast<int32_t>(*this);
+}
+hugeint_t::operator int64_t() const {
+	return NarrowCast<int64_t>(*this);
 }
 
 string hugeint_t::ToString() const {

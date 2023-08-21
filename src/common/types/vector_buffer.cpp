@@ -1,10 +1,10 @@
-#include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/types/vector_buffer.hpp"
-#include "duckdb/common/types/chunk_collection.hpp"
-#include "duckdb/storage/buffer/buffer_handle.hpp"
-#include "duckdb/common/vector_operations/vector_operations.hpp"
 
 #include "duckdb/common/assert.hpp"
+#include "duckdb/common/types/chunk_collection.hpp"
+#include "duckdb/common/types/vector.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/storage/buffer/buffer_handle.hpp"
 
 namespace duckdb {
 
@@ -27,6 +27,12 @@ buffer_ptr<VectorBuffer> VectorBuffer::CreateStandardVector(const LogicalType &t
 VectorStringBuffer::VectorStringBuffer() : VectorBuffer(VectorBufferType::STRING_BUFFER) {
 }
 
+VectorStringBuffer::VectorStringBuffer(VectorBufferType type) : VectorBuffer(type) {
+}
+
+VectorFSSTStringBuffer::VectorFSSTStringBuffer() : VectorStringBuffer(VectorBufferType::FSST_BUFFER) {
+}
+
 VectorStructBuffer::VectorStructBuffer() : VectorBuffer(VectorBufferType::STRUCT_BUFFER) {
 }
 
@@ -34,8 +40,17 @@ VectorStructBuffer::VectorStructBuffer(const LogicalType &type, idx_t capacity)
     : VectorBuffer(VectorBufferType::STRUCT_BUFFER) {
 	auto &child_types = StructType::GetChildTypes(type);
 	for (auto &child_type : child_types) {
-		auto vector = make_unique<Vector>(child_type.second, capacity);
-		children.push_back(move(vector));
+		auto vector = make_uniq<Vector>(child_type.second, capacity);
+		children.push_back(std::move(vector));
+	}
+}
+
+VectorStructBuffer::VectorStructBuffer(Vector &other, const SelectionVector &sel, idx_t count)
+    : VectorBuffer(VectorBufferType::STRUCT_BUFFER) {
+	auto &other_vector = StructVector::GetEntries(other);
+	for (auto &child_vector : other_vector) {
+		auto vector = make_uniq<Vector>(*child_vector, sel, count);
+		children.push_back(std::move(vector));
 	}
 }
 
@@ -43,22 +58,18 @@ VectorStructBuffer::~VectorStructBuffer() {
 }
 
 VectorListBuffer::VectorListBuffer(unique_ptr<Vector> vector, idx_t initial_capacity)
-    : VectorBuffer(VectorBufferType::LIST_BUFFER), capacity(initial_capacity), child(move(vector)) {
+    : VectorBuffer(VectorBufferType::LIST_BUFFER), child(std::move(vector)), capacity(initial_capacity) {
 }
 
 VectorListBuffer::VectorListBuffer(const LogicalType &list_type, idx_t initial_capacity)
-    : VectorBuffer(VectorBufferType::LIST_BUFFER) {
-	// FIXME: directly construct vector of correct size
-	child = make_unique<Vector>(ListType::GetChildType(list_type));
-	capacity = STANDARD_VECTOR_SIZE;
-	Reserve(initial_capacity);
+    : VectorBuffer(VectorBufferType::LIST_BUFFER),
+      child(make_uniq<Vector>(ListType::GetChildType(list_type), initial_capacity)), capacity(initial_capacity) {
 }
 
 void VectorListBuffer::Reserve(idx_t to_reserve) {
 	if (to_reserve > capacity) {
-		idx_t new_capacity = (to_reserve + STANDARD_VECTOR_SIZE - 1) / STANDARD_VECTOR_SIZE * STANDARD_VECTOR_SIZE;
+		idx_t new_capacity = NextPowerOfTwo(to_reserve);
 		D_ASSERT(new_capacity >= to_reserve);
-		D_ASSERT(new_capacity % STANDARD_VECTOR_SIZE == 0);
 		child->Resize(capacity, new_capacity);
 		capacity = new_capacity;
 	}
@@ -77,19 +88,27 @@ void VectorListBuffer::Append(const Vector &to_append, const SelectionVector &se
 	size += to_append_size - source_offset;
 }
 
-void VectorListBuffer::PushBack(Value &insert) {
-	if (size + 1 > capacity) {
+void VectorListBuffer::PushBack(const Value &insert) {
+	while (size + 1 > capacity) {
 		child->Resize(capacity, capacity * 2);
 		capacity *= 2;
 	}
 	child->SetValue(size++, insert);
 }
 
+void VectorListBuffer::SetCapacity(idx_t new_capacity) {
+	this->capacity = new_capacity;
+}
+
+void VectorListBuffer::SetSize(idx_t new_size) {
+	this->size = new_size;
+}
+
 VectorListBuffer::~VectorListBuffer() {
 }
 
-ManagedVectorBuffer::ManagedVectorBuffer(unique_ptr<BufferHandle> handle)
-    : VectorBuffer(VectorBufferType::MANAGED_BUFFER), handle(move(handle)) {
+ManagedVectorBuffer::ManagedVectorBuffer(BufferHandle handle)
+    : VectorBuffer(VectorBufferType::MANAGED_BUFFER), handle(std::move(handle)) {
 }
 
 ManagedVectorBuffer::~ManagedVectorBuffer() {

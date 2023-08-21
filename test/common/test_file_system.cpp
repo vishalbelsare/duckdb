@@ -14,7 +14,7 @@ static void create_dummy_file(string fname) {
 }
 
 TEST_CASE("Make sure file system operators work as advertised", "[file_system]") {
-	unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
 	auto dname = TestCreatePath("TEST_DIR");
 	string fname = "TEST_FILE";
 	string fname2 = "TEST_FILE_TWO";
@@ -63,8 +63,8 @@ TEST_CASE("Make sure file system operators work as advertised", "[file_system]")
 #define INTEGER_COUNT 512
 
 TEST_CASE("Test file operations", "[file_system]") {
-	unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
-	unique_ptr<FileHandle> handle, handle2;
+	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+	duckdb::unique_ptr<FileHandle> handle, handle2;
 	int64_t test_data[INTEGER_COUNT];
 	for (int i = 0; i < INTEGER_COUNT; i++) {
 		test_data[i] = i;
@@ -94,39 +94,5 @@ TEST_CASE("Test file operations", "[file_system]") {
 		REQUIRE(test_data[i] == i);
 	}
 	handle.reset();
-	fs->RemoveFile(fname);
-}
-
-TEST_CASE("Test file buffers for reading/writing to file", "[file_system]") {
-	unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
-	unique_ptr<FileHandle> handle;
-	Allocator allocator;
-
-	auto fname = TestCreatePath("test_file");
-
-	// create the buffer and fill it with data
-	auto buf = make_unique<FileBuffer>(allocator, FileBufferType::BLOCK, 4096);
-	int64_t *ptr = (int64_t *)buf->buffer;
-	for (int64_t i = 0; i < 10; i++) {
-		ptr[i] = i;
-	}
-
-	// open file for writing
-	REQUIRE_NOTHROW(handle = fs->OpenFile(fname,
-	                                      FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_READ |
-	                                          FileFlags::FILE_FLAGS_FILE_CREATE | FileFlags::FILE_FLAGS_DIRECT_IO,
-	                                      FileLockType::WRITE_LOCK));
-	// write the buffer
-	REQUIRE_NOTHROW(buf->Write(*handle, 0));
-	// clear the buffer
-	buf->Clear();
-	// now read data back into the buffer
-	REQUIRE_NOTHROW(buf->Read(*handle, 0));
-	for (int64_t i = 0; i < 10; i++) {
-		REQUIRE(ptr[i] == i);
-	}
-	// close the file
-	handle.reset();
-
 	fs->RemoveFile(fname);
 }

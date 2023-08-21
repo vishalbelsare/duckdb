@@ -5,8 +5,8 @@
 namespace duckdb {
 
 template <class T>
-static void CopyToStorageLoop(VectorData &vdata, idx_t count, data_ptr_t target) {
-	auto ldata = (T *)vdata.data;
+static void CopyToStorageLoop(UnifiedVectorFormat &vdata, idx_t count, data_ptr_t target) {
+	auto ldata = UnifiedVectorFormat::GetData<T>(vdata);
 	auto result_data = (T *)target;
 	for (idx_t i = 0; i < count; i++) {
 		auto idx = vdata.sel->get_index(i);
@@ -22,8 +22,8 @@ void VectorOperations::WriteToStorage(Vector &source, idx_t count, data_ptr_t ta
 	if (count == 0) {
 		return;
 	}
-	VectorData vdata;
-	source.Orrify(count, vdata);
+	UnifiedVectorFormat vdata;
+	source.ToUnifiedFormat(count, vdata);
 
 	switch (source.GetType().InternalType()) {
 	case PhysicalType::BOOL:

@@ -1,5 +1,24 @@
 #!/bin/sh
 
-rm -rf .eggs .pytest_cache build dist duckdb.egg-info duckdb.cpp duckdb.hpp parquet-extension.cpp parquet-extension.hpp duckdb duckdb_tarball
-rm -f sources.list includes.list githash.list
-python3 -c "exec('try:\n\timport duckdb, shutil, os\n\tshutil.rmtree(duckdb.__file__.rsplit(os.path.sep, 1)[0])\nexcept:\n\texit(0);')"
+SCRIPT=$(realpath "$0")
+SCRIPTPATH=$(dirname "$SCRIPT")
+
+echo $SCRIPTPATH
+
+rm -rf	$SCRIPTPATH/.eggs \
+		$SCRIPTPATH/.pytest_cache \
+		$SCRIPTPATH/build \
+		$SCRIPTPATH/duckdb_build \
+		$SCRIPTPATH/dist \
+		$SCRIPTPATH/duckdb.egg-info \
+		$SCRIPTPATH/duckdb.cpp \
+		$SCRIPTPATH/duckdb.hpp \
+		$SCRIPTPATH/parquet_extension.cpp \
+		$SCRIPTPATH/parquet_extension.hpp \
+		$SCRIPTPATH/duckdb_tarball
+
+rm -f	$SCRIPTPATH/sources.list \
+		$SCRIPTPATH/includes.list \
+		$SCRIPTPATH/githash.list
+
+python3 -m pip uninstall duckdb --yes

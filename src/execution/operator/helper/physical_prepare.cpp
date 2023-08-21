@@ -1,14 +1,16 @@
 #include "duckdb/execution/operator/helper/physical_prepare.hpp"
-#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/client_data.hpp"
 
 namespace duckdb {
 
-void PhysicalPrepare::GetData(ExecutionContext &context, DataChunk &chunk, GlobalSourceState &gstate_p,
-                              LocalSourceState &lstate) const {
+SourceResultType PhysicalPrepare::GetData(ExecutionContext &context, DataChunk &chunk,
+                                          OperatorSourceInput &input) const {
 	auto &client = context.client;
 
 	// store the prepared statement in the context
-	client.prepared_statements[name] = prepared;
+	ClientData::Get(client).prepared_statements[name] = prepared;
+
+	return SourceResultType::FINISHED;
 }
 
 } // namespace duckdb

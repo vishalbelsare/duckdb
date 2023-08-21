@@ -3,45 +3,42 @@
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/limits.hpp"
-#include "duckdb/common/serializer.hpp"
-#include "duckdb/parser/parsed_data/create_sequence_info.hpp"
-
+#include "duckdb/common/field_writer.hpp"
+#include "duckdb/parser/keyword_helper.hpp"
+#include "duckdb/common/types/vector.hpp"
 #include <algorithm>
 #include <sstream>
 
 namespace duckdb {
 
-TypeCatalogEntry::TypeCatalogEntry(Catalog *catalog, SchemaCatalogEntry *schema, CreateTypeInfo *info)
-    : StandardEntry(CatalogType::TYPE_ENTRY, schema, catalog, info->name) {
-	user_type = make_unique<LogicalType>(*info->type);
+TypeCatalogEntry::TypeCatalogEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateTypeInfo &info)
+    : StandardEntry(CatalogType::TYPE_ENTRY, schema, catalog, info.name), user_type(info.type) {
+	this->temporary = info.temporary;
+	this->internal = info.internal;
 }
 
-void TypeCatalogEntry::Serialize(Serializer &serializer) {
-	serializer.WriteString(schema->name);
-	serializer.WriteString(name);
-	user_type->Serialize(serializer);
+unique_ptr<CreateInfo> TypeCatalogEntry::GetInfo() const {
+	auto result = make_uniq<CreateTypeInfo>();
+	result->catalog = catalog.GetName();
+	result->schema = schema.name;
+	result->name = name;
+	result->type = user_type;
+	return std::move(result);
 }
 
-unique_ptr<CreateTypeInfo> TypeCatalogEntry::Deserialize(Deserializer &source) {
-	auto info = make_unique<CreateTypeInfo>();
-	info->schema = source.Read<string>();
-	info->name = source.Read<string>();
-	info->type = make_unique<LogicalType>(LogicalType::Deserialize(source));
-	return info;
-}
-
-string TypeCatalogEntry::ToSQL() {
+string TypeCatalogEntry::ToSQL() const {
 	std::stringstream ss;
-	switch (user_type->id()) {
+	switch (user_type.id()) {
 	case (LogicalTypeId::ENUM): {
-		auto values_insert_order = EnumType::GetValuesInsertOrder(*user_type);
+		auto &values_insert_order = EnumType::GetValuesInsertOrder(user_type);
+		idx_t size = EnumType::GetSize(user_type);
 		ss << "CREATE TYPE ";
-		ss << name;
+		ss << KeywordHelper::WriteOptionallyQuoted(name);
 		ss << " AS ENUM ( ";
 
-		for (idx_t i = 0; i < values_insert_order.size(); i++) {
-			ss << "'" << values_insert_order[i] << "'";
-			if (i != values_insert_order.size() - 1) {
+		for (idx_t i = 0; i < size; i++) {
+			ss << "'" << values_insert_order.GetValue(i).ToString() << "'";
+			if (i != size - 1) {
 				ss << ", ";
 			}
 		}

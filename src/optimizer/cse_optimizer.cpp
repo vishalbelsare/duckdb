@@ -15,7 +15,7 @@ struct CSENode {
 	idx_t count;
 	idx_t column_index;
 
-	CSENode() : count(1), column_index(INVALID_INDEX) {
+	CSENode() : count(1), column_index(DConstants::INVALID_INDEX) {
 	}
 };
 
@@ -29,6 +29,8 @@ struct CSEReplacementState {
 	column_binding_map_t<idx_t> column_map;
 	//! The set of expressions of the resulting projection
 	vector<unique_ptr<Expression>> expressions;
+	//! Cached expressions that are kept around so the expression_map always contains valid expressions
+	vector<unique_ptr<Expression>> cached_expressions;
 };
 
 void CommonSubExpressionOptimizer::VisitOperator(LogicalOperator &op) {
@@ -49,16 +51,19 @@ void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplace
 	case ExpressionClass::BOUND_COLUMN_REF:
 	case ExpressionClass::BOUND_CONSTANT:
 	case ExpressionClass::BOUND_PARAMETER:
+	// skip conjunctions and case, since short-circuiting might be incorrectly disabled otherwise
+	case ExpressionClass::BOUND_CONJUNCTION:
+	case ExpressionClass::BOUND_CASE:
 		return;
 	default:
 		break;
 	}
 	if (expr.expression_class != ExpressionClass::BOUND_AGGREGATE && !expr.HasSideEffects()) {
 		// we can't move aggregates to a projection, so we only consider the children of the aggregate
-		auto node = state.expression_count.find(&expr);
+		auto node = state.expression_count.find(expr);
 		if (node == state.expression_count.end()) {
 			// first time we encounter this expression, insert this node with [count = 1]
-			state.expression_count[&expr] = CSENode();
+			state.expression_count[expr] = CSENode();
 		} else {
 			// we encountered this expression before, increment the occurrence count
 			node->second.count++;
@@ -68,17 +73,17 @@ void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplace
 	ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) { CountExpressions(child, state); });
 }
 
-void CommonSubExpressionOptimizer::PerformCSEReplacement(unique_ptr<Expression> *expr_ptr, CSEReplacementState &state) {
-	Expression &expr = **expr_ptr;
+void CommonSubExpressionOptimizer::PerformCSEReplacement(unique_ptr<Expression> &expr_ptr, CSEReplacementState &state) {
+	Expression &expr = *expr_ptr;
 	if (expr.expression_class == ExpressionClass::BOUND_COLUMN_REF) {
-		auto &bound_column_ref = (BoundColumnRefExpression &)expr;
+		auto &bound_column_ref = expr.Cast<BoundColumnRefExpression>();
 		// bound column ref, check if this one has already been recorded in the expression list
 		auto column_entry = state.column_map.find(bound_column_ref.binding);
 		if (column_entry == state.column_map.end()) {
 			// not there yet: push the expression
 			idx_t new_column_index = state.expressions.size();
 			state.column_map[bound_column_ref.binding] = new_column_index;
-			state.expressions.push_back(make_unique<BoundColumnRefExpression>(
+			state.expressions.push_back(make_uniq<BoundColumnRefExpression>(
 			    bound_column_ref.alias, bound_column_ref.return_type, bound_column_ref.binding));
 			bound_column_ref.binding = ColumnBinding(state.projection_index, new_column_index);
 		} else {
@@ -88,28 +93,32 @@ void CommonSubExpressionOptimizer::PerformCSEReplacement(unique_ptr<Expression> 
 		return;
 	}
 	// check if this child is eligible for CSE elimination
-	if (state.expression_count.find(&expr) != state.expression_count.end()) {
-		auto &node = state.expression_count[&expr];
+	bool can_cse = expr.expression_class != ExpressionClass::BOUND_CONJUNCTION &&
+	               expr.expression_class != ExpressionClass::BOUND_CASE;
+	if (can_cse && state.expression_count.find(expr) != state.expression_count.end()) {
+		auto &node = state.expression_count[expr];
 		if (node.count > 1) {
 			// this expression occurs more than once! push it into the projection
 			// check if it has already been pushed into the projection
 			auto alias = expr.alias;
 			auto type = expr.return_type;
-			if (node.column_index == INVALID_INDEX) {
+			if (node.column_index == DConstants::INVALID_INDEX) {
 				// has not been pushed yet: push it
 				node.column_index = state.expressions.size();
-				state.expressions.push_back(move(*expr_ptr));
+				state.expressions.push_back(std::move(expr_ptr));
+			} else {
+				state.cached_expressions.push_back(std::move(expr_ptr));
 			}
 			// replace the original expression with a bound column ref
-			*expr_ptr = make_unique<BoundColumnRefExpression>(alias, type,
-			                                                  ColumnBinding(state.projection_index, node.column_index));
+			expr_ptr = make_uniq<BoundColumnRefExpression>(alias, type,
+			                                               ColumnBinding(state.projection_index, node.column_index));
 			return;
 		}
 	}
 	// this expression only occurs once, we can't perform CSE elimination
 	// look into the children to see if we can replace them
 	ExpressionIterator::EnumerateChildren(expr,
-	                                      [&](unique_ptr<Expression> &child) { PerformCSEReplacement(&child, state); });
+	                                      [&](unique_ptr<Expression> &child) { PerformCSEReplacement(child, state); });
 }
 
 void CommonSubExpressionOptimizer::ExtractCommonSubExpresions(LogicalOperator &op) {
@@ -134,13 +143,14 @@ void CommonSubExpressionOptimizer::ExtractCommonSubExpresions(LogicalOperator &o
 	state.projection_index = binder.GenerateTableIndex();
 	// we found common subexpressions to extract
 	// now we iterate over all the expressions and perform the actual CSE elimination
+
 	LogicalOperatorVisitor::EnumerateExpressions(
-	    op, [&](unique_ptr<Expression> *child) { PerformCSEReplacement(child, state); });
+	    op, [&](unique_ptr<Expression> *child) { PerformCSEReplacement(*child, state); });
 	D_ASSERT(state.expressions.size() > 0);
 	// create a projection node as the child of this node
-	auto projection = make_unique<LogicalProjection>(state.projection_index, move(state.expressions));
-	projection->children.push_back(move(op.children[0]));
-	op.children[0] = move(projection);
+	auto projection = make_uniq<LogicalProjection>(state.projection_index, std::move(state.expressions));
+	projection->children.push_back(std::move(op.children[0]));
+	op.children[0] = std::move(projection);
 }
 
 } // namespace duckdb

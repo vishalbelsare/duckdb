@@ -12,6 +12,11 @@
 #define TWOBLUECUBES_SINGLE_INCLUDE_CATCH_HPP_INCLUDED
 // start catch.hpp
 
+// optional support for printing stacktraces on a crash -- using the backtrace support in DuckDB 
+#ifdef DUCKDB_DEBUG_STACKTRACE
+#include "duckdb/common/exception.hpp"
+#define CATCH_STACKTRACE(X) duckdb::Exception::FormatStackTrace(X).c_str()
+#endif
 
 #define CATCH_VERSION_MAJOR 2
 #define CATCH_VERSION_MINOR 13
@@ -4533,6 +4538,7 @@ namespace Catch {
         virtual int startOffsetPercentage() const = 0;
         virtual int endOffset() const = 0;
         virtual int endOffsetPercentage() const = 0;
+        virtual bool outputSQL() const = 0;
         virtual UseColour::YesOrNo useColour() const = 0;
         virtual std::vector<std::string> const& getSectionsToRun() const = 0;
         virtual Verbosity verbosity() const = 0;
@@ -5296,6 +5302,8 @@ namespace Catch {
         int endOffset = -1;
         int endOffsetPercentage = -1;
 
+	    bool outputSQL = false;
+
         bool benchmarkNoAnalysis = false;
         unsigned int benchmarkSamples = 100;
         double benchmarkConfidenceInterval = 0.95;
@@ -5363,6 +5371,7 @@ namespace Catch {
         int startOffsetPercentage() const override;
         int endOffset() const override;
         int endOffsetPercentage() const override;
+        bool outputSQL() const override;
         UseColour::YesOrNo useColour() const override;
         bool shouldDebugBreak() const override;
         int abortAfter() const override;
@@ -9908,6 +9917,9 @@ namespace Catch {
             | Opt( config.endOffsetPercentage, "endOffsetPercentage" )
                 ["--end-offset-percentage"]
                 ( "end offset of tests (percentage of total tests)" )
+            | Opt( config.outputSQL, "true|false" )
+                ["--output-sql"]
+                ( "if set, only output SQL statements to stderr rather than running the tests" )
             | Opt( config.libIdentify )
                 ["--libidentify"]
                 ( "report name and version according to libidentify standard" )
@@ -10035,6 +10047,7 @@ namespace Catch {
     int Config::endOffset() const                      { return m_data.endOffset; }
     int Config::startOffsetPercentage() const          { return m_data.startOffsetPercentage; }
     int Config::endOffsetPercentage() const            { return m_data.endOffsetPercentage; }
+    bool Config::outputSQL() const                     { return m_data.outputSQL; }
     UseColour::YesOrNo Config::useColour() const       { return m_data.useColour; }
     bool Config::shouldDebugBreak() const              { return m_data.shouldDebugBreak; }
     int Config::abortAfter() const                     { return m_data.abortAfter; }
@@ -10808,7 +10821,10 @@ namespace Catch {
 
 namespace {
     //! Signals fatal error message to the run context
-    void reportFatal( char const * const message ) {
+    void reportFatal( char const * message ) {
+#ifdef CATCH_STACKTRACE
+        message = (const char*) CATCH_STACKTRACE(message); //enrich error message with a stacktrace
+#endif
         Catch::getCurrentContext().getResultCapture()->handleFatalErrorCondition( message );
     }
 
@@ -10930,7 +10946,9 @@ namespace Catch {
             sigaction(signalDefs[i].id, &oldSigActions[i], nullptr);
         }
         // Return the old stack
-        sigaltstack(&oldSigStack, nullptr);
+#ifndef CATCH_STACKTRACE
+        sigaltstack(&oldSigStack, nullptr); // sigaltstack prevents catch-stacktrace to work (on MacOS)
+#endif
     }
 
     static void handleSignal( int sig ) {
@@ -10969,7 +10987,9 @@ namespace Catch {
         sigStack.ss_sp = altStackMem;
         sigStack.ss_size = altStackSize;
         sigStack.ss_flags = 0;
-        sigaltstack(&sigStack, &oldSigStack);
+#ifndef CATCH_STACKTRACE
+        sigaltstack(&sigStack, &oldSigStack); // sigaltstack prevents catch-stacktrace to work (on MacOS)
+#endif
         struct sigaction sa = { };
 
         sa.sa_handler = handleSignal;

@@ -15,6 +15,16 @@ DeleteStmt: opt_with_clause DELETE_P FROM relation_expr_opt_alias
 					n->withClause = $1;
 					$$ = (PGNode *)n;
 				}
+			| TRUNCATE opt_table relation_expr_opt_alias
+			    {
+					PGDeleteStmt *n = makeNode(PGDeleteStmt);
+					n->relation = $3;
+					n->usingClause = NULL;
+					n->whereClause = NULL;
+					n->returningList = NULL;
+					n->withClause = NULL;
+					$$ = (PGNode *)n;
+			    }
 		;
 
 
@@ -47,6 +57,6 @@ where_or_current_clause:
 
 
 using_clause:
-				USING from_list						{ $$ = $2; }
+				USING from_list_opt_comma						{ $$ = $2; }
 			| /*EMPTY*/								{ $$ = NIL; }
 		;

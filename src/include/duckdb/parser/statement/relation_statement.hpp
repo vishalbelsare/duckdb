@@ -15,9 +15,15 @@ namespace duckdb {
 
 class RelationStatement : public SQLStatement {
 public:
+	static constexpr const StatementType TYPE = StatementType::RELATION_STATEMENT;
+
+public:
 	explicit RelationStatement(shared_ptr<Relation> relation);
 
 	shared_ptr<Relation> relation;
+
+protected:
+	RelationStatement(const RelationStatement &other) = default;
 
 public:
 	unique_ptr<SQLStatement> Copy() const override;

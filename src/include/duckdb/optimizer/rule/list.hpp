@@ -9,3 +9,5 @@
 #include "duckdb/optimizer/rule/like_optimizations.hpp"
 #include "duckdb/optimizer/rule/move_constants.hpp"
 #include "duckdb/optimizer/rule/enum_comparison.hpp"
+#include "duckdb/optimizer/rule/regex_optimizations.hpp"
+#include "duckdb/optimizer/rule/ordered_aggregate_optimizer.hpp"

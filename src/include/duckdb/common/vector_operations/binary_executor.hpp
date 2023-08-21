@@ -56,10 +56,21 @@ struct BinaryLambdaWrapper {
 	}
 };
 
+struct BinaryLambdaWrapperWithNulls {
+	template <class FUNC, class OP, class LEFT_TYPE, class RIGHT_TYPE, class RESULT_TYPE>
+	static inline RESULT_TYPE Operation(FUNC fun, LEFT_TYPE left, RIGHT_TYPE right, ValidityMask &mask, idx_t idx) {
+		return fun(left, right, mask, idx);
+	}
+
+	static bool AddsNulls() {
+		return true;
+	}
+};
+
 struct BinaryExecutor {
 	template <class LEFT_TYPE, class RIGHT_TYPE, class RESULT_TYPE, class OPWRAPPER, class OP, class FUNC,
 	          bool LEFT_CONSTANT, bool RIGHT_CONSTANT>
-	static void ExecuteFlatLoop(LEFT_TYPE *__restrict ldata, RIGHT_TYPE *__restrict rdata,
+	static void ExecuteFlatLoop(const LEFT_TYPE *__restrict ldata, const RIGHT_TYPE *__restrict rdata,
 	                            RESULT_TYPE *__restrict result_data, idx_t count, ValidityMask &mask, FUNC fun) {
 		if (!LEFT_CONSTANT) {
 			ASSERT_RESTRICT(ldata, ldata + count, result_data, result_data + count);
@@ -173,7 +184,7 @@ struct BinaryExecutor {
 	}
 
 	template <class LEFT_TYPE, class RIGHT_TYPE, class RESULT_TYPE, class OPWRAPPER, class OP, class FUNC>
-	static void ExecuteGenericLoop(LEFT_TYPE *__restrict ldata, RIGHT_TYPE *__restrict rdata,
+	static void ExecuteGenericLoop(const LEFT_TYPE *__restrict ldata, const RIGHT_TYPE *__restrict rdata,
 	                               RESULT_TYPE *__restrict result_data, const SelectionVector *__restrict lsel,
 	                               const SelectionVector *__restrict rsel, idx_t count, ValidityMask &lvalidity,
 	                               ValidityMask &rvalidity, ValidityMask &result_validity, FUNC fun) {
@@ -202,16 +213,17 @@ struct BinaryExecutor {
 
 	template <class LEFT_TYPE, class RIGHT_TYPE, class RESULT_TYPE, class OPWRAPPER, class OP, class FUNC>
 	static void ExecuteGeneric(Vector &left, Vector &right, Vector &result, idx_t count, FUNC fun) {
-		VectorData ldata, rdata;
+		UnifiedVectorFormat ldata, rdata;
 
-		left.Orrify(count, ldata);
-		right.Orrify(count, rdata);
+		left.ToUnifiedFormat(count, ldata);
+		right.ToUnifiedFormat(count, rdata);
 
 		result.SetVectorType(VectorType::FLAT_VECTOR);
 		auto result_data = FlatVector::GetData<RESULT_TYPE>(result);
 		ExecuteGenericLoop<LEFT_TYPE, RIGHT_TYPE, RESULT_TYPE, OPWRAPPER, OP, FUNC>(
-		    (LEFT_TYPE *)ldata.data, (RIGHT_TYPE *)rdata.data, result_data, ldata.sel, rdata.sel, count, ldata.validity,
-		    rdata.validity, FlatVector::Validity(result), fun);
+		    UnifiedVectorFormat::GetData<LEFT_TYPE>(ldata), UnifiedVectorFormat::GetData<RIGHT_TYPE>(rdata),
+		    result_data, ldata.sel, rdata.sel, count, ldata.validity, rdata.validity, FlatVector::Validity(result),
+		    fun);
 	}
 
 	template <class LEFT_TYPE, class RIGHT_TYPE, class RESULT_TYPE, class OPWRAPPER, class OP, class FUNC>
@@ -254,6 +266,13 @@ public:
 		                                                                                           count, false);
 	}
 
+	template <class LEFT_TYPE, class RIGHT_TYPE, class RESULT_TYPE,
+	          class FUNC = std::function<RESULT_TYPE(LEFT_TYPE, RIGHT_TYPE, ValidityMask &, idx_t)>>
+	static void ExecuteWithNulls(Vector &left, Vector &right, Vector &result, idx_t count, FUNC fun) {
+		ExecuteSwitch<LEFT_TYPE, RIGHT_TYPE, RESULT_TYPE, BinaryLambdaWrapperWithNulls, bool, FUNC>(left, right, result,
+		                                                                                            count, fun);
+	}
+
 public:
 	template <class LEFT_TYPE, class RIGHT_TYPE, class OP>
 	static idx_t SelectConstant(Vector &left, Vector &right, const SelectionVector *sel, idx_t count,
@@ -282,7 +301,7 @@ public:
 
 	template <class LEFT_TYPE, class RIGHT_TYPE, class OP, bool LEFT_CONSTANT, bool RIGHT_CONSTANT, bool HAS_TRUE_SEL,
 	          bool HAS_FALSE_SEL>
-	static inline idx_t SelectFlatLoop(LEFT_TYPE *__restrict ldata, RIGHT_TYPE *__restrict rdata,
+	static inline idx_t SelectFlatLoop(const LEFT_TYPE *__restrict ldata, const RIGHT_TYPE *__restrict rdata,
 	                                   const SelectionVector *sel, idx_t count, ValidityMask &validity_mask,
 	                                   SelectionVector *true_sel, SelectionVector *false_sel) {
 		idx_t true_count = 0, false_count = 0;
@@ -346,7 +365,7 @@ public:
 	}
 
 	template <class LEFT_TYPE, class RIGHT_TYPE, class OP, bool LEFT_CONSTANT, bool RIGHT_CONSTANT>
-	static inline idx_t SelectFlatLoopSwitch(LEFT_TYPE *__restrict ldata, RIGHT_TYPE *__restrict rdata,
+	static inline idx_t SelectFlatLoopSwitch(const LEFT_TYPE *__restrict ldata, const RIGHT_TYPE *__restrict rdata,
 	                                         const SelectionVector *sel, idx_t count, ValidityMask &mask,
 	                                         SelectionVector *true_sel, SelectionVector *false_sel) {
 		if (true_sel && false_sel) {
@@ -369,9 +388,19 @@ public:
 		auto rdata = FlatVector::GetData<RIGHT_TYPE>(right);
 
 		if (LEFT_CONSTANT && ConstantVector::IsNull(left)) {
+			if (false_sel) {
+				for (idx_t i = 0; i < count; i++) {
+					false_sel->set_index(i, sel->get_index(i));
+				}
+			}
 			return 0;
 		}
 		if (RIGHT_CONSTANT && ConstantVector::IsNull(right)) {
+			if (false_sel) {
+				for (idx_t i = 0; i < count; i++) {
+					false_sel->set_index(i, sel->get_index(i));
+				}
+			}
 			return 0;
 		}
 
@@ -391,10 +420,10 @@ public:
 
 	template <class LEFT_TYPE, class RIGHT_TYPE, class OP, bool NO_NULL, bool HAS_TRUE_SEL, bool HAS_FALSE_SEL>
 	static inline idx_t
-	SelectGenericLoop(LEFT_TYPE *__restrict ldata, RIGHT_TYPE *__restrict rdata, const SelectionVector *__restrict lsel,
-	                  const SelectionVector *__restrict rsel, const SelectionVector *__restrict result_sel, idx_t count,
-	                  ValidityMask &lvalidity, ValidityMask &rvalidity, SelectionVector *true_sel,
-	                  SelectionVector *false_sel) {
+	SelectGenericLoop(const LEFT_TYPE *__restrict ldata, const RIGHT_TYPE *__restrict rdata,
+	                  const SelectionVector *__restrict lsel, const SelectionVector *__restrict rsel,
+	                  const SelectionVector *__restrict result_sel, idx_t count, ValidityMask &lvalidity,
+	                  ValidityMask &rvalidity, SelectionVector *true_sel, SelectionVector *false_sel) {
 		idx_t true_count = 0, false_count = 0;
 		for (idx_t i = 0; i < count; i++) {
 			auto result_idx = result_sel->get_index(i);
@@ -419,7 +448,7 @@ public:
 	}
 	template <class LEFT_TYPE, class RIGHT_TYPE, class OP, bool NO_NULL>
 	static inline idx_t
-	SelectGenericLoopSelSwitch(LEFT_TYPE *__restrict ldata, RIGHT_TYPE *__restrict rdata,
+	SelectGenericLoopSelSwitch(const LEFT_TYPE *__restrict ldata, const RIGHT_TYPE *__restrict rdata,
 	                           const SelectionVector *__restrict lsel, const SelectionVector *__restrict rsel,
 	                           const SelectionVector *__restrict result_sel, idx_t count, ValidityMask &lvalidity,
 	                           ValidityMask &rvalidity, SelectionVector *true_sel, SelectionVector *false_sel) {
@@ -438,7 +467,7 @@ public:
 
 	template <class LEFT_TYPE, class RIGHT_TYPE, class OP>
 	static inline idx_t
-	SelectGenericLoopSwitch(LEFT_TYPE *__restrict ldata, RIGHT_TYPE *__restrict rdata,
+	SelectGenericLoopSwitch(const LEFT_TYPE *__restrict ldata, const RIGHT_TYPE *__restrict rdata,
 	                        const SelectionVector *__restrict lsel, const SelectionVector *__restrict rsel,
 	                        const SelectionVector *__restrict result_sel, idx_t count, ValidityMask &lvalidity,
 	                        ValidityMask &rvalidity, SelectionVector *true_sel, SelectionVector *false_sel) {
@@ -454,21 +483,21 @@ public:
 	template <class LEFT_TYPE, class RIGHT_TYPE, class OP>
 	static idx_t SelectGeneric(Vector &left, Vector &right, const SelectionVector *sel, idx_t count,
 	                           SelectionVector *true_sel, SelectionVector *false_sel) {
-		VectorData ldata, rdata;
+		UnifiedVectorFormat ldata, rdata;
 
-		left.Orrify(count, ldata);
-		right.Orrify(count, rdata);
+		left.ToUnifiedFormat(count, ldata);
+		right.ToUnifiedFormat(count, rdata);
 
-		return SelectGenericLoopSwitch<LEFT_TYPE, RIGHT_TYPE, OP>((LEFT_TYPE *)ldata.data, (RIGHT_TYPE *)rdata.data,
-		                                                          ldata.sel, rdata.sel, sel, count, ldata.validity,
-		                                                          rdata.validity, true_sel, false_sel);
+		return SelectGenericLoopSwitch<LEFT_TYPE, RIGHT_TYPE, OP>(
+		    UnifiedVectorFormat::GetData<LEFT_TYPE>(ldata), UnifiedVectorFormat::GetData<RIGHT_TYPE>(rdata), ldata.sel,
+		    rdata.sel, sel, count, ldata.validity, rdata.validity, true_sel, false_sel);
 	}
 
 	template <class LEFT_TYPE, class RIGHT_TYPE, class OP>
 	static idx_t Select(Vector &left, Vector &right, const SelectionVector *sel, idx_t count, SelectionVector *true_sel,
 	                    SelectionVector *false_sel) {
 		if (!sel) {
-			sel = &FlatVector::INCREMENTAL_SELECTION_VECTOR;
+			sel = FlatVector::IncrementalSelectionVector();
 		}
 		if (left.GetVectorType() == VectorType::CONSTANT_VECTOR &&
 		    right.GetVectorType() == VectorType::CONSTANT_VECTOR) {

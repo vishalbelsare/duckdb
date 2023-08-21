@@ -167,13 +167,28 @@ makeSampleSize(PGValue *sample_size, bool is_percentage) {
 }
 
 static PGNode *
-makeSampleOptions(PGNode *sample_size, char *method, int seed, int location) {
+makeSampleOptions(PGNode *sample_size, char *method, int *seed, int location) {
 	PGSampleOptions *n = makeNode(PGSampleOptions);
 
 	n->sample_size = sample_size;
 	n->method = method;
-	n->seed = seed;
+	if (seed) {
+		n->has_seed = true;
+		n->seed = *seed;
+	}
 	n->location = location;
+
+	return (PGNode *)n;
+}
+
+/* makeLimitPercent()
+ * Make limit percent node
+ */
+static PGNode *
+makeLimitPercent(PGNode *limit_percent) {
+	PGLimitPercent *n = makeNode(PGLimitPercent);
+
+	n->limit_percent = limit_percent;
 
 	return (PGNode *)n;
 }
@@ -328,6 +343,17 @@ static PGNode* makeParamRef(int number, int location)
 	PGParamRef *p = makeNode(PGParamRef);
 	p->number = number;
 	p->location = location;
+	p->name = NULL;
+	return (PGNode *) p;
+}
+
+/* makeNamedParamRef
+ * Creates a new PGParamRef node
+ */
+static PGNode* makeNamedParamRef(char *name, int location)
+{
+	PGParamRef *p = (PGParamRef *)makeParamRef(0, location);
+	p->name = name;
 	return (PGNode *) p;
 }
 
@@ -526,18 +552,6 @@ static PGNode *
 makeNotExpr(PGNode *expr, int location)
 {
 	return (PGNode *) makeBoolExpr(PG_NOT_EXPR, list_make1(expr), location);
-}
-
-static PGNode *
-makeSQLValueFunction(PGSQLValueFunctionOp op, int32_t typmod, int location)
-{
-	PGSQLValueFunction *svf = makeNode(PGSQLValueFunction);
-
-	svf->op = op;
-	/* svf->type will be filled during parse analysis */
-	svf->typmod = typmod;
-	svf->location = location;
-	return (PGNode *) svf;
 }
 
 /* Separate PGConstraint nodes from COLLATE clauses in a */

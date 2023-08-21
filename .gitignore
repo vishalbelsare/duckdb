@@ -145,8 +145,6 @@ scripts/PelotonTest/lib
 #==============================================================================#
 *.pb-c.c
 *.pb-c.h
-*.pb.cc
-*.pb.h
 *.pb.go
 
 #==============================================================================#
@@ -239,8 +237,6 @@ io_file
 *.lib
 
 # Compiled protocol buffers
-*.pb.h
-*.pb.cc
 *_pb2.py
 
 # Compiled python
@@ -328,13 +324,22 @@ tools/*.tar.gz
 .Rhistory
 ub_*.cpp
 
-# python parquet files used in tests
-tools/pythonpkg/tests/unsigned.parquet
-tools/pythonpkg/tests/userdata1.parquet
-
 # node tests
 __nvm
 
 *.vcxproj*
-*.cmake
 *.sln
+
+# Zig files
+zig-out/*gs
+zig-cache/*
+*.zig
+
+# .db files
+*.db
+
+# local cmake extension config
+extension/extension_config_local.cmake
+
+# extension_external dir
+extension_external

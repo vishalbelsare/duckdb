@@ -1,122 +1,219 @@
 #include "duckdb/execution/index/art/node4.hpp"
+
+#include "duckdb/execution/index/art/prefix.hpp"
 #include "duckdb/execution/index/art/node16.hpp"
-#include "duckdb/execution/index/art/art.hpp"
+#include "duckdb/storage/metadata/metadata_reader.hpp"
+#include "duckdb/storage/metadata/metadata_writer.hpp"
 
 namespace duckdb {
 
-Node4::Node4(ART &art, size_t compression_length) : Node(art, NodeType::N4, compression_length) {
-	memset(key, 0, sizeof(key));
+Node4 &Node4::New(ART &art, Node &node) {
+
+	node = Node::GetAllocator(art, NType::NODE_4).New();
+	node.SetType((uint8_t)NType::NODE_4);
+	auto &n4 = Node4::Get(art, node);
+
+	n4.count = 0;
+	return n4;
 }
 
-idx_t Node4::GetChildPos(uint8_t k) {
-	for (idx_t pos = 0; pos < count; pos++) {
-		if (key[pos] == k) {
-			return pos;
-		}
+void Node4::Free(ART &art, Node &node) {
+
+	D_ASSERT(node.IsSet());
+	D_ASSERT(!node.IsSerialized());
+
+	auto &n4 = Node4::Get(art, node);
+
+	// free all children
+	for (idx_t i = 0; i < n4.count; i++) {
+		Node::Free(art, n4.children[i]);
 	}
-	return Node::GetChildPos(k);
 }
 
-idx_t Node4::GetChildGreaterEqual(uint8_t k, bool &equal) {
-	for (idx_t pos = 0; pos < count; pos++) {
-		if (key[pos] >= k) {
-			if (key[pos] == k) {
-				equal = true;
-			} else {
-				equal = false;
-			}
-			return pos;
-		}
+Node4 &Node4::ShrinkNode16(ART &art, Node &node4, Node &node16) {
+
+	auto &n4 = Node4::New(art, node4);
+	auto &n16 = Node16::Get(art, node16);
+
+	D_ASSERT(n16.count <= Node::NODE_4_CAPACITY);
+	n4.count = n16.count;
+	for (idx_t i = 0; i < n16.count; i++) {
+		n4.key[i] = n16.key[i];
+		n4.children[i] = n16.children[i];
 	}
-	return Node::GetChildGreaterEqual(k, equal);
+
+	n16.count = 0;
+	Node::Free(art, node16);
+	return n4;
 }
 
-idx_t Node4::GetMin() {
-	return 0;
-}
+void Node4::InitializeMerge(ART &art, const ARTFlags &flags) {
 
-idx_t Node4::GetNextPos(idx_t pos) {
-	if (pos == INVALID_INDEX) {
-		return 0;
+	for (idx_t i = 0; i < count; i++) {
+		children[i].InitializeMerge(art, flags);
 	}
-	pos++;
-	return pos < count ? pos : INVALID_INDEX;
 }
 
-unique_ptr<Node> *Node4::GetChild(idx_t pos) {
-	D_ASSERT(pos < count);
-	return &child[pos];
-}
+void Node4::InsertChild(ART &art, Node &node, const uint8_t byte, const Node child) {
 
-void Node4::Insert(ART &art, unique_ptr<Node> &node, uint8_t key_byte, unique_ptr<Node> &child) {
-	Node4 *n = static_cast<Node4 *>(node.get());
+	D_ASSERT(node.IsSet());
+	D_ASSERT(!node.IsSerialized());
+	auto &n4 = Node4::Get(art, node);
 
-	// Insert leaf into inner node
-	if (node->count < 4) {
-		// Insert element
-		idx_t pos = 0;
-		while ((pos < node->count) && (n->key[pos] < key_byte)) {
-			pos++;
+	// ensure that there is no other child at the same byte
+	for (idx_t i = 0; i < n4.count; i++) {
+		D_ASSERT(n4.key[i] != byte);
+	}
+
+	// insert new child node into node
+	if (n4.count < Node::NODE_4_CAPACITY) {
+		// still space, just insert the child
+		idx_t child_pos = 0;
+		while (child_pos < n4.count && n4.key[child_pos] < byte) {
+			child_pos++;
 		}
-		if (n->child[pos] != nullptr) {
-			for (idx_t i = n->count; i > pos; i--) {
-				n->key[i] = n->key[i - 1];
-				n->child[i] = move(n->child[i - 1]);
-			}
+		// move children backwards to make space
+		for (idx_t i = n4.count; i > child_pos; i--) {
+			n4.key[i] = n4.key[i - 1];
+			n4.children[i] = n4.children[i - 1];
 		}
-		n->key[pos] = key_byte;
-		n->child[pos] = move(child);
-		n->count++;
+
+		n4.key[child_pos] = byte;
+		n4.children[child_pos] = child;
+		n4.count++;
+
 	} else {
-		// Grow to Node16
-		auto new_node = make_unique<Node16>(art, n->prefix_length);
-		new_node->count = 4;
-		CopyPrefix(art, node.get(), new_node.get());
-		for (idx_t i = 0; i < 4; i++) {
-			new_node->key[i] = n->key[i];
-			new_node->child[i] = move(n->child[i]);
-		}
-		node = move(new_node);
-		Node16::Insert(art, node, key_byte, child);
+		// node is full, grow to Node16
+		auto node4 = node;
+		Node16::GrowNode4(art, node, node4);
+		Node16::InsertChild(art, node, byte, child);
 	}
 }
 
-void Node4::Erase(ART &art, unique_ptr<Node> &node, int pos) {
-	Node4 *n = static_cast<Node4 *>(node.get());
-	D_ASSERT(pos < n->count);
+void Node4::DeleteChild(ART &art, Node &node, Node &prefix, const uint8_t byte) {
 
-	// erase the child and decrease the count
-	n->child[pos].reset();
-	n->count--;
-	// potentially move any children backwards
-	for (; pos < n->count; pos++) {
-		n->key[pos] = n->key[pos + 1];
-		n->child[pos] = move(n->child[pos + 1]);
+	D_ASSERT(node.IsSet());
+	D_ASSERT(!node.IsSerialized());
+	auto &n4 = Node4::Get(art, node);
+
+	idx_t child_pos = 0;
+	for (; child_pos < n4.count; child_pos++) {
+		if (n4.key[child_pos] == byte) {
+			break;
+		}
 	}
 
-	// This is a one way node
-	if (n->count == 1) {
-		auto childref = n->child[0].get();
-		//! concatenate prefixes
-		auto new_length = node->prefix_length + childref->prefix_length + 1;
-		//! have to allocate space in our prefix array
-		unique_ptr<uint8_t[]> new_prefix = unique_ptr<uint8_t[]>(new uint8_t[new_length]);
-		;
+	D_ASSERT(child_pos < n4.count);
+	D_ASSERT(n4.count > 1);
 
-		//! first move the existing prefix (if any)
-		for (uint32_t i = 0; i < childref->prefix_length; i++) {
-			new_prefix[new_length - (i + 1)] = childref->prefix[childref->prefix_length - (i + 1)];
+	// free the child and decrease the count
+	Node::Free(art, n4.children[child_pos]);
+	n4.count--;
+
+	// potentially move any children backwards
+	for (idx_t i = child_pos; i < n4.count; i++) {
+		n4.key[i] = n4.key[i + 1];
+		n4.children[i] = n4.children[i + 1];
+	}
+
+	// this is a one way node, compress
+	if (n4.count == 1) {
+
+		// we need to keep track of the old node pointer
+		// because Concatenate() might overwrite that pointer while appending bytes to
+		// the prefix (and by doing so overwriting the subsequent node with
+		// new prefix nodes)
+		auto old_n4_node = node;
+
+		// get only child and concatenate prefixes
+		auto child = *n4.GetChild(n4.key[0]);
+		Prefix::Concatenate(art, prefix, n4.key[0], child);
+
+		n4.count--;
+		Node::Free(art, old_n4_node);
+	}
+}
+
+void Node4::ReplaceChild(const uint8_t byte, const Node child) {
+	for (idx_t i = 0; i < count; i++) {
+		if (key[i] == byte) {
+			children[i] = child;
+			return;
 		}
-		//! now move the current key as part of the prefix
-		new_prefix[node->prefix_length] = n->key[0];
-		//! finally add the old prefix
-		for (uint32_t i = 0; i < node->prefix_length; i++) {
-			new_prefix[i] = node->prefix[i];
+	}
+}
+
+optional_ptr<Node> Node4::GetChild(const uint8_t byte) {
+
+	for (idx_t i = 0; i < count; i++) {
+		if (key[i] == byte) {
+			D_ASSERT(children[i].IsSet());
+			return &children[i];
 		}
-		//! set new prefix and move the child
-		childref->prefix = move(new_prefix);
-		childref->prefix_length = new_length;
-		node = move(n->child[0]);
+	}
+	return nullptr;
+}
+
+optional_ptr<Node> Node4::GetNextChild(uint8_t &byte) {
+
+	for (idx_t i = 0; i < count; i++) {
+		if (key[i] >= byte) {
+			byte = key[i];
+			D_ASSERT(children[i].IsSet());
+			return &children[i];
+		}
+	}
+	return nullptr;
+}
+
+BlockPointer Node4::Serialize(ART &art, MetadataWriter &writer) {
+
+	// recurse into children and retrieve child block pointers
+	vector<BlockPointer> child_block_pointers;
+	for (idx_t i = 0; i < count; i++) {
+		child_block_pointers.push_back(children[i].Serialize(art, writer));
+	}
+	for (idx_t i = count; i < Node::NODE_4_CAPACITY; i++) {
+		child_block_pointers.emplace_back((block_id_t)DConstants::INVALID_INDEX, 0);
+	}
+
+	// get pointer and write fields
+	auto block_pointer = writer.GetBlockPointer();
+	writer.Write(NType::NODE_4);
+	writer.Write<uint8_t>(count);
+
+	// write key values
+	for (idx_t i = 0; i < Node::NODE_4_CAPACITY; i++) {
+		writer.Write(key[i]);
+	}
+
+	// write child block pointers
+	for (auto &child_block_pointer : child_block_pointers) {
+		writer.Write(child_block_pointer.block_id);
+		writer.Write(child_block_pointer.offset);
+	}
+
+	return block_pointer;
+}
+
+void Node4::Deserialize(MetadataReader &reader) {
+	count = reader.Read<uint8_t>();
+
+	// read key values
+	for (idx_t i = 0; i < Node::NODE_4_CAPACITY; i++) {
+		key[i] = reader.Read<uint8_t>();
+	}
+
+	// read child block pointers
+	for (idx_t i = 0; i < Node::NODE_4_CAPACITY; i++) {
+		children[i] = Node(reader);
+	}
+}
+
+void Node4::Vacuum(ART &art, const ARTFlags &flags) {
+
+	for (idx_t i = 0; i < count; i++) {
+		children[i].Vacuum(art, flags);
 	}
 }
 

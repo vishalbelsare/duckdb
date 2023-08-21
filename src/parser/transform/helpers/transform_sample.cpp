@@ -18,13 +18,13 @@ static SampleMethod GetSampleMethod(const string &method) {
 	}
 }
 
-unique_ptr<SampleOptions> Transformer::TransformSampleOptions(duckdb_libpgquery::PGNode *options) {
+unique_ptr<SampleOptions> Transformer::TransformSampleOptions(optional_ptr<duckdb_libpgquery::PGNode> options) {
 	if (!options) {
 		return nullptr;
 	}
-	auto result = make_unique<SampleOptions>();
-	auto &sample_options = (duckdb_libpgquery::PGSampleOptions &)*options;
-	auto &sample_size = (duckdb_libpgquery::PGSampleSize &)*sample_options.sample_size;
+	auto result = make_uniq<SampleOptions>();
+	auto &sample_options = PGCast<duckdb_libpgquery::PGSampleOptions>(*options);
+	auto &sample_size = *PGPointerCast<duckdb_libpgquery::PGSampleSize>(sample_options.sample_size);
 	auto sample_value = TransformValue(sample_size.sample_size)->value;
 	result->is_percentage = sample_size.is_percentage;
 	if (sample_size.is_percentage) {
@@ -47,7 +47,9 @@ unique_ptr<SampleOptions> Transformer::TransformSampleOptions(duckdb_libpgquery:
 	if (sample_options.method) {
 		result->method = GetSampleMethod(sample_options.method);
 	}
-	result->seed = sample_options.seed == 0 ? -1 : sample_options.seed;
+	if (sample_options.has_seed) {
+		result->seed = sample_options.seed;
+	}
 	return result;
 }
 

@@ -3,6 +3,9 @@
 # group: [list]
 
 statement ok
+SET default_null_order='nulls_first';
+
+statement ok
 PRAGMA enable_verification
 
 # otherwise sorting order of lists is undefined
@@ -91,9 +94,9 @@ SELECT g, LIST(e) l1, LIST(e) l2 from list_data GROUP BY g ORDER BY g
 query IT
 SELECT g, LIST(e/2.0) from list_data GROUP BY g order by g
 ----
-1	[0.500000, 1.000000]
-2	[1.500000, 2.000000, 2.500000]
-3	[3.000000]
+1	[0.5, 1.0]
+2	[1.5, 2.0, 2.5]
+3	[3.0]
 5	[NULL]
 
 query IT
@@ -212,7 +215,7 @@ SELECT g, LIST(STRUCT_PACK(a := e, b := e+1)) ls from list_data GROUP BY g ORDER
 
 # TODO check second col
 query IT
-SELECT g, LIST(STRUCT_PACK(a := e, b := e+1)) ls from list_data WHERE g > 2GROUP BY g ORDER BY g
+SELECT g, LIST(STRUCT_PACK(a := e, b := e+1)) ls from list_data WHERE g > 2 GROUP BY g ORDER BY g
 ----
 3	[{'a': 6, 'b': 7}]
 5	[{'a': NULL, 'b': NULL}]

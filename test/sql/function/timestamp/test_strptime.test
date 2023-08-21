@@ -180,22 +180,24 @@ WHERE rt <> dt
 ----
 
 # empty specifier and string
-query I
+statement error
 SELECT strptime('', '')
-----
-1900-01-01 00:00:00
 
-query I
+statement error
 SELECT strptime(NULL, '')
-----
-NULL
 
 query I
 SELECT strptime('', NULL)
 ----
 NULL
 
-# UTC offset
+# Spaces match multiple spaces (Issue #3418)
+query I
+SELECT strptime('Jun 30 2003  2:03:10AM', '%b %d %Y %-I:%M:%S%p');
+----
+2003-06-30 02:03:10
+
+# UTC offset - produces TIMESTAMPTZ
 query I
 select strptime('2020-12-31 21:25:58.745232', '%Y-%m-%d %H:%M:%S.%f');
 ----
@@ -209,43 +211,71 @@ select strptime('2020-12-31 21:25:58.745232', '%Y-%m-%d %H:%M:%S.%f');
 query I
 select strptime('2020-12-31 21:25:58.745232+00', '%Y-%m-%d %H:%M:%S.%f%z');
 ----
-2020-12-31 21:25:58.745232
+2020-12-31 21:25:58.745232+00
 
 query I
 select strptime('2020-12-31 21:25:58.745232+0000', '%Y-%m-%d %H:%M:%S.%f%z');
 ----
-2020-12-31 21:25:58.745232
+2020-12-31 21:25:58.745232+00
 
 query I
 select strptime('2020-12-31 21:25:58.745232+02', '%Y-%m-%d %H:%M:%S.%f%z');
 ----
-2020-12-31 19:25:58.745232
+2020-12-31 19:25:58.745232+00
 
 query I
 select strptime('2020-12-31 21:25:58.745232-02', '%Y-%m-%d %H:%M:%S.%f%z');
 ----
-2020-12-31 23:25:58.745232
+2020-12-31 23:25:58.745232+00
 
 query I
 select strptime('2020-12-31 21:25:58.745232+0215', '%Y-%m-%d %H:%M:%S.%f%z');
 ----
-2020-12-31 19:10:58.745232
+2020-12-31 19:10:58.745232+00
 
 query I
 select strptime('2020-12-31 21:25:58.745232-0215', '%Y-%m-%d %H:%M:%S.%f%z');
 ----
-2020-12-31 23:40:58.745232
+2020-12-31 23:40:58.745232+00
 
 # on the boundaries
 query I
 select strptime('2020-12-31 03:25:58.745232+04', '%Y-%m-%d %H:%M:%S.%f%z');
 ----
-2020-12-30 23:25:58.745232
+2020-12-30 23:25:58.745232+00
 
 query I
 select strptime('2020-12-30 23:25:58.745232-04', '%Y-%m-%d %H:%M:%S.%f%z');
 ----
-2020-12-31 03:25:58.745232
+2020-12-31 03:25:58.745232+00
+
+# Don't swallow non-spaces
+query I
+SELECT strptime('Mon Oct 17 2022 22:00:00 GMT+0000 (GMT)', '%a %b %d %Y %X GMT%z (%Z)') as fixed;
+----
+2022-10-17 22:00:00+00
+
+query I
+SELECT strptime('Mon Oct 17 2022 22:00:00 GMT+0000 (GMT', '%a %b %d %Y %X GMT%z (%Z') as working;
+----
+2022-10-17 22:00:00+00
+
+#
+# Multiple patterns
+#
+query I
+SELECT strptime('10/28/1910', ['%d-%m-%Y', '%m-%d-%Y', '%d/%m/%Y', '%m/%d/%Y'])
+----
+1910-10-28 00:00:00
+
+# Report mismatch for first pattern
+statement error
+SELECT strptime('10.28.1910', ['%d-%m-%Y', '%m-%d-%Y', '%d/%m/%Y', '%m/%d/%Y'])
+----
+Error: Literal does not match, expected /
+
+statement error
+SELECT strptime('Mon Oct 17 2022 22:00:00 GMT+0000 (GMT)', '%a %b %d %Y %X GMT%z (%Z') as broken;
 
 # incorrect usage
 statement error

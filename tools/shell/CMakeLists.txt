@@ -21,11 +21,11 @@ if(STATIC_LIBCPP)
 endif()
 
 if(NOT AMALGAMATION_BUILD AND NOT WIN32)
-  target_link_libraries(shell utf8proc)
+  target_link_libraries(shell duckdb_utf8proc)
 endif()
 
 set_target_properties(shell PROPERTIES OUTPUT_NAME duckdb)
 set_target_properties(shell PROPERTIES RUNTIME_OUTPUT_DIRECTORY
-                                       ${CMAKE_BINARY_DIR})
+                                       ${PROJECT_BINARY_DIR})
 
 install(TARGETS shell RUNTIME DESTINATION "${INSTALL_BIN_DIR}")

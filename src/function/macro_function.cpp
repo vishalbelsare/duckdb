@@ -1,47 +1,52 @@
+
 #include "duckdb/function/macro_function.hpp"
 
-#include "duckdb/catalog/catalog_entry/macro_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
+#include "duckdb/catalog/catalog_entry/scalar_macro_catalog_entry.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/function/scalar_macro_function.hpp"
+#include "duckdb/function/table_macro_function.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/comparison_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 
 namespace duckdb {
 
-MacroFunction::MacroFunction(unique_ptr<ParsedExpression> expression) : expression(move(expression)) {
+// MacroFunction::MacroFunction(unique_ptr<ParsedExpression> expression) : expression(std::move(expression)) {}
+
+MacroFunction::MacroFunction(MacroType type) : type(type) {
 }
 
-string MacroFunction::ValidateArguments(MacroCatalogEntry &macro_func, FunctionExpression &function_expr,
+string MacroFunction::ValidateArguments(MacroFunction &macro_def, const string &name, FunctionExpression &function_expr,
                                         vector<unique_ptr<ParsedExpression>> &positionals,
                                         unordered_map<string, unique_ptr<ParsedExpression>> &defaults) {
+
 	// separate positional and default arguments
-	auto &macro_def = *macro_func.function;
 	for (auto &arg : function_expr.children) {
-		if (arg->type == ExpressionType::VALUE_CONSTANT && !arg->alias.empty()) {
+		if (!arg->alias.empty()) {
 			// default argument
-			if (macro_def.default_parameters.find(arg->alias) == macro_def.default_parameters.end()) {
-				return StringUtil::Format("Macro %s does not have default parameter %s!", macro_func.name, arg->alias);
-			} else if (defaults.find(arg->alias) != defaults.end()) {
+			if (!macro_def.default_parameters.count(arg->alias)) {
+				return StringUtil::Format("Macro %s does not have default parameter %s!", name, arg->alias);
+			} else if (defaults.count(arg->alias)) {
 				return StringUtil::Format("Duplicate default parameters %s!", arg->alias);
 			}
-			defaults[arg->alias] = move(arg);
+			defaults[arg->alias] = std::move(arg);
 		} else if (!defaults.empty()) {
 			return "Positional parameters cannot come after parameters with a default value!";
 		} else {
 			// positional argument
-			positionals.push_back(move(arg));
+			positionals.push_back(std::move(arg));
 		}
 	}
 
 	// validate if the right number of arguments was supplied
 	string error;
-	auto &parameters = macro_func.function->parameters;
+	auto &parameters = macro_def.parameters;
 	if (parameters.size() != positionals.size()) {
 		error = StringUtil::Format(
-		    "Macro function '%s(%s)' requires ", macro_func.name,
+		    "Macro function '%s(%s)' requires ", name,
 		    StringUtil::Join(parameters, parameters.size(), ", ", [](const unique_ptr<ParsedExpression> &p) {
-			    return ((ColumnRefExpression &)*p).column_names[0];
+			    return (p->Cast<ColumnRefExpression>()).column_names[0];
 		    }));
 		error += parameters.size() == 1 ? "a single positional argument"
 		                                : StringUtil::Format("%i positional arguments", parameters.size());
@@ -52,24 +57,80 @@ string MacroFunction::ValidateArguments(MacroCatalogEntry &macro_func, FunctionE
 		return error;
 	}
 
-	// fill in default value where this was not supplied
+	// Add the default values for parameters that have defaults, that were not explicitly assigned to
 	for (auto it = macro_def.default_parameters.begin(); it != macro_def.default_parameters.end(); it++) {
-		if (defaults.find(it->first) == defaults.end()) {
-			defaults[it->first] = it->second->Copy();
+		auto &parameter_name = it->first;
+		auto &parameter_default = it->second;
+		if (!defaults.count(parameter_name)) {
+			// This parameter was not set yet, set it with the default value
+			defaults[parameter_name] = parameter_default->Copy();
 		}
 	}
 
 	return error;
 }
 
-unique_ptr<MacroFunction> MacroFunction::Copy() {
-	auto result = make_unique<MacroFunction>(expression->Copy());
+void MacroFunction::CopyProperties(MacroFunction &other) const {
+	other.type = type;
 	for (auto &param : parameters) {
-		result->parameters.push_back(param->Copy());
+		other.parameters.push_back(param->Copy());
 	}
 	for (auto &kv : default_parameters) {
-		result->default_parameters[kv.first] = kv.second->Copy();
+		other.default_parameters[kv.first] = kv.second->Copy();
 	}
+}
+
+string MacroFunction::ToSQL(const string &schema, const string &name) const {
+	vector<string> param_strings;
+	for (auto &param : parameters) {
+		param_strings.push_back(param->ToString());
+	}
+	for (auto &named_param : default_parameters) {
+		param_strings.push_back(StringUtil::Format("%s := %s", named_param.first, named_param.second->ToString()));
+	}
+
+	return StringUtil::Format("CREATE MACRO %s.%s(%s) AS ", schema, name, StringUtil::Join(param_strings, ", "));
+}
+
+void MacroFunction::Serialize(Serializer &main_serializer) const {
+	FieldWriter writer(main_serializer);
+	writer.WriteField(type);
+	writer.WriteSerializableList(parameters);
+	writer.WriteField<uint32_t>((uint32_t)default_parameters.size());
+	auto &serializer = writer.GetSerializer();
+	for (auto &kv : default_parameters) {
+		serializer.WriteString(kv.first);
+		kv.second->Serialize(serializer);
+	}
+	SerializeInternal(writer);
+	writer.Finalize();
+}
+
+unique_ptr<MacroFunction> MacroFunction::Deserialize(Deserializer &main_source) {
+	FieldReader reader(main_source);
+	auto type = reader.ReadRequired<MacroType>();
+	auto parameters = reader.ReadRequiredSerializableList<ParsedExpression>();
+	auto default_param_count = reader.ReadRequired<uint32_t>();
+	unordered_map<string, unique_ptr<ParsedExpression>> default_parameters;
+	auto &source = reader.GetSource();
+	for (idx_t i = 0; i < default_param_count; i++) {
+		auto name = source.Read<string>();
+		default_parameters[name] = ParsedExpression::Deserialize(source);
+	}
+	unique_ptr<MacroFunction> result;
+	switch (type) {
+	case MacroType::SCALAR_MACRO:
+		result = ScalarMacroFunction::Deserialize(reader);
+		break;
+	case MacroType::TABLE_MACRO:
+		result = TableMacroFunction::Deserialize(reader);
+		break;
+	default:
+		throw InternalException("Cannot deserialize macro type");
+	}
+	result->parameters = std::move(parameters);
+	result->default_parameters = std::move(default_parameters);
+	reader.Finalize();
 	return result;
 }
 

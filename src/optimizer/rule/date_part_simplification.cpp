@@ -7,30 +7,31 @@
 #include "duckdb/optimizer/expression_rewriter.hpp"
 #include "duckdb/common/enums/date_part_specifier.hpp"
 #include "duckdb/function/function.hpp"
+#include "duckdb/function/function_binder.hpp"
 
 namespace duckdb {
 
 DatePartSimplificationRule::DatePartSimplificationRule(ExpressionRewriter &rewriter) : Rule(rewriter) {
-	auto func = make_unique<FunctionExpressionMatcher>();
-	func->function = make_unique<SpecificFunctionMatcher>("date_part");
-	func->matchers.push_back(make_unique<ConstantExpressionMatcher>());
-	func->matchers.push_back(make_unique<ExpressionMatcher>());
+	auto func = make_uniq<FunctionExpressionMatcher>();
+	func->function = make_uniq<SpecificFunctionMatcher>("date_part");
+	func->matchers.push_back(make_uniq<ConstantExpressionMatcher>());
+	func->matchers.push_back(make_uniq<ExpressionMatcher>());
 	func->policy = SetMatcher::Policy::ORDERED;
-	root = move(func);
+	root = std::move(func);
 }
 
-unique_ptr<Expression> DatePartSimplificationRule::Apply(LogicalOperator &op, vector<Expression *> &bindings,
+unique_ptr<Expression> DatePartSimplificationRule::Apply(LogicalOperator &op, vector<reference<Expression>> &bindings,
                                                          bool &changes_made, bool is_root) {
-	auto &date_part = (BoundFunctionExpression &)*bindings[0];
-	auto &constant_expr = (BoundConstantExpression &)*bindings[1];
+	auto &date_part = bindings[0].get().Cast<BoundFunctionExpression>();
+	auto &constant_expr = bindings[1].get().Cast<BoundConstantExpression>();
 	auto &constant = constant_expr.value;
 
-	if (constant.is_null) {
+	if (constant.IsNull()) {
 		// NULL specifier: return constant NULL
-		return make_unique<BoundConstantExpression>(Value(date_part.return_type));
+		return make_uniq<BoundConstantExpression>(Value(date_part.return_type));
 	}
 	// otherwise check the specifier
-	auto specifier = GetDatePartSpecifier(constant.str_value);
+	auto specifier = GetDatePartSpecifier(StringValue::Get(constant));
 	string new_function_name;
 	switch (specifier) {
 	case DatePartSpecifier::YEAR:
@@ -49,7 +50,7 @@ unique_ptr<Expression> DatePartSimplificationRule::Apply(LogicalOperator &op, ve
 		new_function_name = "century";
 		break;
 	case DatePartSpecifier::MILLENNIUM:
-		new_function_name = "millenium";
+		new_function_name = "millennium";
 		break;
 	case DatePartSpecifier::QUARTER:
 		new_function_name = "quarter";
@@ -92,15 +93,15 @@ unique_ptr<Expression> DatePartSimplificationRule::Apply(LogicalOperator &op, ve
 	}
 	// found a replacement function: bind it
 	vector<unique_ptr<Expression>> children;
-	children.push_back(move(date_part.children[1]));
+	children.push_back(std::move(date_part.children[1]));
 
 	string error;
-	auto function = ScalarFunction::BindScalarFunction(rewriter.context, DEFAULT_SCHEMA, new_function_name,
-	                                                   move(children), error, false);
+	FunctionBinder binder(rewriter.context);
+	auto function = binder.BindScalarFunction(DEFAULT_SCHEMA, new_function_name, std::move(children), error, false);
 	if (!function) {
 		throw BinderException(error);
 	}
-	return move(function);
+	return function;
 }
 
 } // namespace duckdb

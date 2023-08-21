@@ -1,7 +1,7 @@
 #ifndef DUCKDB_NO_THREADS
 
 #include "catch.hpp"
-#include "duckdb/common/progress_bar.hpp"
+#include "duckdb/common/progress_bar/progress_bar.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "test_helpers.hpp"
 
@@ -23,10 +23,10 @@ public:
 	atomic<bool> correct;
 
 	void CheckProgressThread() {
-		int prev_percentage = -1;
+		double prev_percentage = -1;
 		while (!stop) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
-			int new_percentage = context->GetProgress();
+			double new_percentage = context->GetProgress();
 			if (!(new_percentage >= prev_percentage || new_percentage == -1)) {
 				correct = false;
 			}

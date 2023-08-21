@@ -37,6 +37,13 @@ enum class WALType : uint8_t {
 	DROP_TYPE = 14,
 
 	ALTER_INFO = 20,
+
+	CREATE_TABLE_MACRO = 21,
+	DROP_TABLE_MACRO = 22,
+
+	CREATE_INDEX = 23,
+	DROP_INDEX = 24,
+
 	// -----------------------------
 	// Data
 	// -----------------------------

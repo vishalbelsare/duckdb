@@ -5,6 +5,9 @@
 # https://github.com/sqlalchemy/sqlalchemy/blob/master/lib/sqlalchemy/dialects/postgresql/base.py
 
 statement ok
+CREATE TYPE greeting AS ENUM('hi', 'bonjour', 'konnichiwa', 'howdy')
+
+statement ok
 CREATE TABLE integral_values (
     j smallint,
     k integer,
@@ -19,12 +22,14 @@ CREATE TABLE integral_values (
     r bytea,
     s date,
     t time,
-    u timestamp
+    u timestamp,
+	v date[],
+	w greeting
 );
 
 # has_schema
 query I
-select nspname from pg_namespace " "where lower(nspname)='main'
+select distinct nspname from pg_namespace " "where lower(nspname)='main'
 ----
 main
 
@@ -148,7 +153,7 @@ seq
 
 # get_view_definition
 query I
-SELECT string_split_regex(pg_get_viewdef(c.oid), '\n')[0] view_def FROM pg_class c
+SELECT string_split_regex(pg_get_viewdef(c.oid), '\n')[1] view_def FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'myschema' AND c.relname = 'v1'
 AND c.relkind IN ('v', 'm')
@@ -187,6 +192,9 @@ r	bytea	NULL	false
 s	date	NULL	false
 t	time without time zone	NULL	false
 u	timestamp without time zone	NULL	false
+v	list	NULL	false
+w	enum	NULL	false
+
 
 # get_pk_constraint
 statement ok
@@ -335,7 +343,7 @@ WHERE
 mode unskip
 
 # load_enums
-statement ok
+query IIII
 SELECT t.typname as "name",
 	-- no enum defaults in 8.4 at least
 	-- t.typdefault as "default",
@@ -346,6 +354,12 @@ FROM pg_catalog.pg_type t
 		LEFT JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
 		LEFT JOIN pg_catalog.pg_enum e ON t.oid = e.enumtypid
 WHERE t.typtype = 'e'
+ORDER BY e.enumsortorder
+----
+greeting	true	main	hi
+greeting	true	main	bonjour
+greeting	true	main	konnichiwa
+greeting	true	main	howdy
 
 # load domains
 statement ok

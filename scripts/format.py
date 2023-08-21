@@ -8,28 +8,120 @@ import sys
 import inspect
 import subprocess
 import difflib
+import re
 from python_helpers import open_utf8
+from importlib import import_module
+from importlib.metadata import version
+
+try:
+    import_module('black')
+except ImportError as e:
+    print('you need to run `pip install black`', e)
+    exit(-1)
+
+try:
+    ver = subprocess.check_output(('clang-format', '--version'), text=True)
+    if '11.' not in ver:
+        print('you need to run `pip install clang_format==11.0.1 - `', ver)
+        exit(-1)
+except Exception as e:
+    print('you need to run `pip install clang_format==11.0.1 - `', e)
+    exit(-1)
 
 cpp_format_command = 'clang-format --sort-includes=0 -style=file'
 cmake_format_command = 'cmake-format'
-extensions = ['.cpp', '.c', '.hpp', '.h', '.cc', '.hh', 'CMakeLists.txt', '.test', '.test_slow', '.test_coverage']
-formatted_directories = ['src', 'benchmark', 'test', 'tools', 'examples', 'extension']
-ignored_files = ['tpch_constants.hpp', 'tpcds_constants.hpp', '_generated', 'tpce_flat_input.hpp',
-                 'test_csv_header.hpp', 'duckdb.cpp', 'duckdb.hpp', 'json.hpp', 'sqlite3.h', 'shell.c',
-                 'termcolor.hpp', 'test_insert_invalid.test', 'httplib.hpp', 'os_win.c', 'glob.c', 'printf.c',
-                 'helper.hpp', 'single_thread_ptr.hpp','types.hpp', 'default_views.cpp', 'default_functions.cpp',
-                 'release.h', 'genrand.cpp', 'address.cpp', 'visualizer_constants.hpp']
-ignored_directories = ['.eggs', '__pycache__', 'icu', 'dbgen', os.path.join('tools', 'pythonpkg', 'duckdb'), os.path.join('tools', 'pythonpkg', 'build'), os.path.join('tools', 'rpkg', 'src', 'duckdb'), os.path.join('extension', 'tpcds', 'dsdgen')]
+
+try:
+    subprocess.check_output(('cmake-format', '--version'), text=True)
+except Exception as e:
+    print('you need to run `pip install cmake-format`', e)
+    exit(-1)
+
+extensions = [
+    '.cpp',
+    '.c',
+    '.hpp',
+    '.h',
+    '.cc',
+    '.hh',
+    'CMakeLists.txt',
+    '.test',
+    '.test_slow',
+    '.test_coverage',
+    '.benchmark',
+    '.py',
+    '.java',
+]
+formatted_directories = ['src', 'benchmark', 'test', 'tools', 'examples', 'extension', 'scripts']
+ignored_files = [
+    'tpch_constants.hpp',
+    'tpcds_constants.hpp',
+    '_generated',
+    'tpce_flat_input.hpp',
+    'test_csv_header.hpp',
+    'duckdb.cpp',
+    'duckdb.hpp',
+    'json.hpp',
+    'sqlite3.h',
+    'shell.c',
+    'termcolor.hpp',
+    'test_insert_invalid.test',
+    'httplib.hpp',
+    'os_win.c',
+    'glob.c',
+    'printf.c',
+    'helper.hpp',
+    'single_thread_ptr.hpp',
+    'types.hpp',
+    'default_views.cpp',
+    'default_functions.cpp',
+    'release.h',
+    'genrand.cpp',
+    'address.cpp',
+    'visualizer_constants.hpp',
+    'icu-collate.cpp',
+    'icu-collate.hpp',
+    'yyjson.cpp',
+    'yyjson.hpp',
+    'duckdb_pdqsort.hpp',
+    'stubdata.cpp',
+    'nf_calendar.cpp',
+    'nf_calendar.h',
+    'nf_localedata.cpp',
+    'nf_localedata.h',
+    'nf_zformat.cpp',
+    'nf_zformat.h',
+    'expr.cc',
+    'function_list.cpp',
+]
+ignored_directories = [
+    '.eggs',
+    '__pycache__',
+    'dbgen',
+    os.path.join('tools', 'pythonpkg', 'duckdb'),
+    os.path.join('tools', 'pythonpkg', 'build'),
+    os.path.join('tools', 'rpkg', 'src', 'duckdb'),
+    os.path.join('tools', 'rpkg', 'inst', 'include', 'cpp11'),
+    os.path.join('extension', 'tpcds', 'dsdgen'),
+    os.path.join('extension', 'jemalloc', 'jemalloc'),
+    os.path.join('extension', 'json', 'yyjson'),
+    os.path.join('extension', 'icu', 'third_party'),
+    os.path.join('src', 'include', 'duckdb', 'core_functions', 'aggregate'),
+    os.path.join('src', 'include', 'duckdb', 'core_functions', 'scalar'),
+    os.path.join('tools', 'nodejs', 'src', 'duckdb'),
+]
 format_all = False
 check_only = True
 confirm = True
 silent = False
 
+
 def print_usage():
     print("Usage: python scripts/format.py [revision|--all] [--check|--fix]")
-    print("   [revision]     is an optional revision number, all files that changed since that revision will be formatted (default=HEAD)")
     print(
-        "                  if [revision] is set to --all, all files will be formatted")
+        "   [revision]     is an optional revision number, all files that changed since that revision will be formatted (default=HEAD)"
+    )
+    print("                  if [revision] is set to --all, all files will be formatted")
     print("   --check only prints differences, --fix also fixes the files (--check is default)")
     exit(1)
 
@@ -59,13 +151,24 @@ if len(sys.argv) > 2:
 if revision == '--all':
     format_all = True
 
+
+def file_is_ignored(full_path):
+    if os.path.basename(full_path) in ignored_files:
+        return True
+    dirnames = os.path.sep.join(full_path.split(os.path.sep)[:-1])
+    for ignored_directory in ignored_directories:
+        if ignored_directory in dirnames:
+            return True
+    return False
+
+
 def can_format_file(full_path):
     global extensions, formatted_directories, ignored_files
     if not os.path.isfile(full_path):
         return False
     fname = full_path.split(os.path.sep)[-1]
     # check ignored files
-    if fname in ignored_files:
+    if file_is_ignored(full_path):
         return False
     found = False
     # check file extension
@@ -86,16 +189,19 @@ action = "Formatting"
 if check_only:
     action = "Checking"
 
+
 def get_changed_files(revision):
-    proc = subprocess.Popen(
-        ['git', 'diff', '--name-only', revision], stdout=subprocess.PIPE)
+    proc = subprocess.Popen(['git', 'diff', '--name-only', revision], stdout=subprocess.PIPE)
     files = proc.stdout.read().decode('utf8').split('\n')
     changed_files = []
     for f in files:
         if not can_format_file(f):
             continue
+        if file_is_ignored(f):
+            continue
         changed_files.append(f)
     return changed_files
+
 
 if os.path.isfile(revision):
     print(action + " individual file: " + revision)
@@ -137,7 +243,9 @@ format_commands = {
     '.h': cpp_format_command,
     '.hh': cpp_format_command,
     '.cc': cpp_format_command,
-    '.txt': cmake_format_command
+    '.txt': cmake_format_command,
+    '.py': 'black --quiet - --skip-string-normalization --line-length 120 --stdin-filename',
+    '.java': cpp_format_command,
 }
 
 difference_files = []
@@ -148,14 +256,19 @@ header_bottom = "//\n" + "//\n"
 header_bottom += "//===----------------------------------------------------------------------===//\n\n"
 base_dir = os.path.join(os.getcwd(), 'src/include')
 
+
 def get_formatted_text(f, full_path, directory, ext):
     if not can_format_file(full_path):
         print("Eek, cannot format file " + full_path + " but attempted to format anyway")
         exit(1)
     if f == 'list.hpp':
         # fill in list file
-        file_list = [os.path.join(dp, f) for dp, dn, filenames in os.walk(
-            directory) for f in filenames if os.path.splitext(f)[1] == '.hpp' and not f.endswith("list.hpp")]
+        file_list = [
+            os.path.join(dp, f)
+            for dp, dn, filenames in os.walk(directory)
+            for f in filenames
+            if os.path.splitext(f)[1] == '.hpp' and not f.endswith("list.hpp")
+        ]
         file_list = [x.replace('src/include/', '') for x in file_list]
         file_list.sort()
         result = ""
@@ -164,9 +277,8 @@ def get_formatted_text(f, full_path, directory, ext):
         return result
 
     if ext == ".hpp" and directory.startswith("src/include"):
-        f = open_utf8(full_path, 'r')
-        lines = f.readlines()
-        f.close()
+        with open_utf8(full_path, 'r') as f:
+            lines = f.readlines()
 
         # format header in files
         header_middle = "// " + os.path.relpath(full_path, base_dir) + "\n"
@@ -178,7 +290,7 @@ def get_formatted_text(f, full_path, directory, ext):
             if not is_old_header:
                 text += line
 
-    if ext == '.test' or ext == '.test_slow' or ext == '.test_coverage':
+    if ext == '.test' or ext == '.test_slow' or ext == '.test_coverage' or ext == '.benchmark':
         f = open_utf8(full_path, 'r')
         lines = f.readlines()
         f.close()
@@ -187,31 +299,34 @@ def get_formatted_text(f, full_path, directory, ext):
         found_group = False
         group_name = full_path.split('/')[-2]
         new_path_line = '# name: ' + full_path + '\n'
-        new_group_line =  '# group: [' + group_name + ']' + '\n'
+        new_group_line = '# group: [' + group_name + ']' + '\n'
         found_diff = False
-        for i in range(0, len(lines)):
-            line = lines[i]
-            if line.startswith('# name: ') or line.startswith('#name: '):
-                if found_name:
-                    print("Error formatting file " + full_path + ", multiple lines starting with # name found")
+        # Find description.
+        found_description = False
+        for line in lines:
+            if line.lower().startswith('# description:') or line.lower().startswith('#description:'):
+                if found_description:
+                    print("Error formatting file " + full_path + ", multiple lines starting with # description found")
                     exit(1)
-                found_name = True
-                if lines[i] != new_path_line:
-                    lines[i] = new_path_line
-            if line.startswith('# group: ') or line.startswith('#group: '):
-                if found_group:
-                    print("Error formatting file " + full_path + ", multiple lines starting with # group found")
-                    exit(1)
-                found_group = True
-                if lines[i] != new_group_line:
-                    lines[i] = new_group_line
-        if not found_group:
-            lines = [new_group_line] + lines
-        if not found_name:
-            lines = [new_path_line] + lines
-        return ''.join(lines)
+                found_description = True
+                new_description_line = '# description: ' + line.split(':', 1)[1].strip() + '\n'
+        # Filter old meta.
+        meta = ['#name:', '# name:', '#description:', '# description:', '#group:', '# group:']
+        lines = [line for line in lines if not any(line.lower().startswith(m) for m in meta)]
+        # Clean up empty leading lines.
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        # Ensure header is prepended.
+        header = [new_path_line]
+        if found_description:
+            header.append(new_description_line)
+        header.append(new_group_line)
+        header.append('\n')
+        return ''.join(header + lines)
     proc_command = format_commands[ext].split(' ') + [full_path]
-    proc = subprocess.Popen(proc_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(
+        proc_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=open(full_path) if ext == '.py' else None
+    )
     new_text = proc.stdout.read().decode('utf8')
     stderr = proc.stderr.read().decode('utf8')
     if len(stderr) > 0:
@@ -220,15 +335,29 @@ def get_formatted_text(f, full_path, directory, ext):
         print(' '.join(proc_command))
         print(stderr)
         exit(1)
-    return new_text
+    new_text = new_text.replace('\r', '')
+    new_text = re.sub(r'\n*$', '', new_text)
+    return new_text + '\n'
+
+
+def file_is_generated(text):
+    if '// This file is automatically generated by scripts/' in text:
+        return True
+    return False
+
 
 def format_file(f, full_path, directory, ext):
     global difference_files
-    f = open_utf8(full_path, 'r')
-    old_lines = f.read().split('\n')
-    f.close()
+    with open_utf8(full_path, 'r') as f:
+        old_text = f.read()
+    # do not format auto-generated files
+    if file_is_generated(old_text) and ext != '.py':
+        return
+    old_lines = old_text.split('\n')
 
     new_text = get_formatted_text(f, full_path, directory, ext)
+    if ext in ('.cpp', '.hpp'):
+        new_text = new_text.replace('ARGS &&...args', 'ARGS &&... args')
     if check_only:
         new_lines = new_text.split('\n')
         old_lines = [x for x in old_lines if '...' not in x]
@@ -238,6 +367,7 @@ def format_file(f, full_path, directory, ext):
         for diff_line in diff_result:
             total_diff += diff_line + "\n"
         total_diff = total_diff.strip()
+
         if len(total_diff) > 0:
             print("----------------------------------------")
             print("----------------------------------------")
@@ -248,10 +378,10 @@ def format_file(f, full_path, directory, ext):
             difference_files.append(full_path)
     else:
         tmpfile = full_path + ".tmp"
-        f = open_utf8(tmpfile, 'w+')
-        f.write(new_text)
-        f.close()
+        with open_utf8(tmpfile, 'w+') as f:
+            f.write(new_text)
         os.rename(tmpfile, full_path)
+
 
 def format_directory(directory):
     files = os.listdir(directory)
@@ -265,8 +395,7 @@ def format_directory(directory):
                 print(full_path)
             format_directory(full_path)
         elif can_format_file(full_path):
-            format_file(f, full_path, directory, '.' +
-                        f.split('.')[-1])
+            format_file(f, full_path, directory, '.' + f.split('.')[-1])
 
 
 if format_all:
@@ -274,12 +403,9 @@ if format_all:
         os.system(cmake_format_command.replace("${FILE}", "CMakeLists.txt"))
     except:
         pass
-    format_directory('src')
-    format_directory('benchmark')
-    format_directory('test')
-    format_directory('tools')
-    format_directory('examples')
-    format_directory('extension')
+
+    for direct in formatted_directories:
+        format_directory(direct)
 
 else:
     for full_path in changed_files:

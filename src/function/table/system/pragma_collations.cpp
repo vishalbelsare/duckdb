@@ -7,7 +7,7 @@
 
 namespace duckdb {
 
-struct PragmaCollateData : public FunctionOperatorData {
+struct PragmaCollateData : public GlobalTableFunctionState {
 	PragmaCollateData() : offset(0) {
 	}
 
@@ -15,33 +15,27 @@ struct PragmaCollateData : public FunctionOperatorData {
 	idx_t offset;
 };
 
-static unique_ptr<FunctionData> PragmaCollateBind(ClientContext &context, vector<Value> &inputs,
-                                                  unordered_map<string, Value> &named_parameters,
-                                                  vector<LogicalType> &input_table_types,
-                                                  vector<string> &input_table_names, vector<LogicalType> &return_types,
-                                                  vector<string> &names) {
+static unique_ptr<FunctionData> PragmaCollateBind(ClientContext &context, TableFunctionBindInput &input,
+                                                  vector<LogicalType> &return_types, vector<string> &names) {
 	names.emplace_back("collname");
-	return_types.push_back(LogicalType::VARCHAR);
+	return_types.emplace_back(LogicalType::VARCHAR);
 
 	return nullptr;
 }
 
-unique_ptr<FunctionOperatorData> PragmaCollateInit(ClientContext &context, const FunctionData *bind_data,
-                                                   const vector<column_t> &column_ids, TableFilterCollection *filters) {
-	auto result = make_unique<PragmaCollateData>();
+unique_ptr<GlobalTableFunctionState> PragmaCollateInit(ClientContext &context, TableFunctionInitInput &input) {
+	auto result = make_uniq<PragmaCollateData>();
 
-	Catalog::GetCatalog(context).schemas->Scan(context, [&](CatalogEntry *entry) {
-		auto schema = (SchemaCatalogEntry *)entry;
-		schema->Scan(context, CatalogType::COLLATION_ENTRY,
-		             [&](CatalogEntry *entry) { result->entries.push_back(entry->name); });
-	});
-
-	return move(result);
+	auto schemas = Catalog::GetAllSchemas(context);
+	for (auto schema : schemas) {
+		schema.get().Scan(context, CatalogType::COLLATION_ENTRY,
+		                  [&](CatalogEntry &entry) { result->entries.push_back(entry.name); });
+	}
+	return std::move(result);
 }
 
-static void PragmaCollateFunction(ClientContext &context, const FunctionData *bind_data,
-                                  FunctionOperatorData *operator_state, DataChunk *input, DataChunk &output) {
-	auto &data = (PragmaCollateData &)*operator_state;
+static void PragmaCollateFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &data = data_p.global_state->Cast<PragmaCollateData>();
 	if (data.offset >= data.entries.size()) {
 		// finished returning values
 		return;

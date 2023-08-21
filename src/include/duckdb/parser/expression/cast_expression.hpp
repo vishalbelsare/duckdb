@@ -16,7 +16,10 @@ namespace duckdb {
 //! CastExpression represents a type cast from one SQL type to another SQL type
 class CastExpression : public ParsedExpression {
 public:
-	CastExpression(LogicalType target, unique_ptr<ParsedExpression> child, bool try_cast = false);
+	static constexpr const ExpressionClass TYPE = ExpressionClass::CAST;
+
+public:
+	DUCKDB_API CastExpression(LogicalType target, unique_ptr<ParsedExpression> child, bool try_cast = false);
 
 	//! The child of the cast expression
 	unique_ptr<ParsedExpression> child;
@@ -28,11 +31,23 @@ public:
 public:
 	string ToString() const override;
 
-	static bool Equals(const CastExpression *a, const CastExpression *b);
+	static bool Equal(const CastExpression &a, const CastExpression &b);
 
 	unique_ptr<ParsedExpression> Copy() const override;
 
-	void Serialize(Serializer &serializer) override;
-	static unique_ptr<ParsedExpression> Deserialize(ExpressionType type, Deserializer &source);
+	void Serialize(FieldWriter &writer) const override;
+	static unique_ptr<ParsedExpression> Deserialize(ExpressionType type, FieldReader &source);
+	void FormatSerialize(FormatSerializer &serializer) const override;
+	static unique_ptr<ParsedExpression> FormatDeserialize(FormatDeserializer &deserializer);
+
+public:
+	template <class T, class BASE>
+	static string ToString(const T &entry) {
+		return (entry.try_cast ? "TRY_CAST(" : "CAST(") + entry.child->ToString() + " AS " +
+		       entry.cast_type.ToString() + ")";
+	}
+
+private:
+	CastExpression();
 };
 } // namespace duckdb

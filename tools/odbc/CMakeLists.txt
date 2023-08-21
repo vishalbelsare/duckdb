@@ -19,6 +19,9 @@ if(ODBC_FOUND)
   if(WIN32)
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
     add_subdirectory(winsetup)
+    list(APPEND LINK_LIB_LIST $<$<PLATFORM_ID:Windows>:odbccp32>)
+    list(APPEND LINK_LIB_LIST
+         $<$<PLATFORM_ID:Windows>:legacy_stdio_definitions>)
   endif()
 endif()
 
@@ -37,11 +40,20 @@ add_library(
   statement_functions.cpp
   odbc_interval.cpp
   odbc_fetch.cpp
+  odbc_utils.cpp
   empty_stubs.cpp
   descriptor.cpp
   parameter_descriptor.cpp
-  duckdb_odbc.def)
+  row_descriptor.cpp
+  cursor.cpp
+  odbc_diagnostic.cpp
+  duckdb_odbc.def
+  handle_functions.cpp
+  include/handle_functions.hpp)
 
 set_target_properties(duckdb_odbc PROPERTIES DEFINE_SYMBOL "DUCKDB_ODBC_API")
-
 target_link_libraries(duckdb_odbc ${LINK_LIB_LIST} duckdb_static)
+
+if(NOT WIN32 AND NOT CLANG_TIDY)
+  add_subdirectory(test)
+endif()

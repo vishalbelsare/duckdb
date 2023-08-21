@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/field_writer.hpp"
 #include "duckdb/parser/parsed_expression.hpp"
 #include "duckdb/planner/expression.hpp"
 
@@ -19,27 +20,26 @@ namespace duckdb {
 //! when dealing with subqueries.
 class BoundExpression : public ParsedExpression {
 public:
-	BoundExpression(unique_ptr<Expression> expr)
-	    : ParsedExpression(ExpressionType::INVALID, ExpressionClass::BOUND_EXPRESSION), expr(move(expr)) {
-	}
+	static constexpr const ExpressionClass TYPE = ExpressionClass::BOUND_EXPRESSION;
+
+public:
+	BoundExpression(unique_ptr<Expression> expr);
 
 	unique_ptr<Expression> expr;
 
 public:
-	string ToString() const override {
-		return expr->ToString();
-	}
+	static unique_ptr<Expression> &GetExpression(ParsedExpression &expr);
 
-	bool Equals(const BaseExpression *other) const override {
-		return false;
-	}
-	hash_t Hash() const override {
-		return 0;
-	}
+	string ToString() const override;
 
-	unique_ptr<ParsedExpression> Copy() const override {
-		throw SerializationException("Cannot copy or serialize bound expression");
-	}
+	bool Equals(const BaseExpression &other) const override;
+	hash_t Hash() const override;
+
+	unique_ptr<ParsedExpression> Copy() const override;
+
+	void Serialize(FieldWriter &writer) const override;
+
+	void FormatSerialize(FormatSerializer &serializer) const override;
 };
 
 } // namespace duckdb

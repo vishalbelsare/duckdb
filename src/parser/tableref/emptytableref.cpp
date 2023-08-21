@@ -1,23 +1,26 @@
 #include "duckdb/parser/tableref/emptytableref.hpp"
 
-#include "duckdb/common/serializer.hpp"
+#include "duckdb/common/field_writer.hpp"
 
 namespace duckdb {
 
-bool EmptyTableRef::Equals(const TableRef *other) const {
+string EmptyTableRef::ToString() const {
+	return "";
+}
+
+bool EmptyTableRef::Equals(const TableRef &other) const {
 	return TableRef::Equals(other);
 }
 
 unique_ptr<TableRef> EmptyTableRef::Copy() {
-	return make_unique<EmptyTableRef>();
+	return make_uniq<EmptyTableRef>();
 }
 
-void EmptyTableRef::Serialize(Serializer &serializer) {
-	TableRef::Serialize(serializer);
+void EmptyTableRef::Serialize(FieldWriter &writer) const {
 }
 
-unique_ptr<TableRef> EmptyTableRef::Deserialize(Deserializer &source) {
-	return make_unique<EmptyTableRef>();
+unique_ptr<TableRef> EmptyTableRef::Deserialize(FieldReader &reader) {
+	return make_uniq<EmptyTableRef>();
 }
 
 } // namespace duckdb

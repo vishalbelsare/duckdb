@@ -332,6 +332,9 @@ typecast		"::"
 dot_dot			\.\.
 colon_equals	":="
 lambda_arrow	"->"
+double_arrow    "->>"
+power_of        "**"
+integer_div     "//"
 
 /* " */
 
@@ -756,7 +759,6 @@ other			.
 <xuiend>{xustop1} {
 					/* no UESCAPE after the quote, throw back everything */
 					char	   *ident;
-					int			identlen;
 
 					yyless(0);
 
@@ -764,14 +766,12 @@ other			.
 					if (yyextra->literallen == 0)
 						yyerror("zero-length delimited identifier");
 					ident = litbuf_udeescape('\\', yyscanner);
-					identlen = strlen(ident);
 					yylval->str = ident;
 					return IDENT;
 				}
 <xuiend>{xustop2}	{
 					/* found UESCAPE after the end quote */
 					char	   *ident;
-					int			identlen;
 
 					BEGIN(INITIAL);
 					if (yyextra->literallen == 0)
@@ -783,7 +783,6 @@ other			.
 						yyerror("invalid Unicode escape character");
 					}
 					ident = litbuf_udeescape(yytext[yyleng - 2], yyscanner);
-					identlen = strlen(ident);
 					yylval->str = ident;
 					return IDENT;
 				}
@@ -825,6 +824,21 @@ other			.
 {lambda_arrow}	{
 					SET_YYLLOC();
 					return LAMBDA_ARROW;
+				}
+
+{double_arrow}  {
+                    SET_YYLLOC();
+                    return DOUBLE_ARROW;
+                		}
+
+{power_of}	{
+					SET_YYLLOC();
+					return POWER_OF;
+				}
+
+{integer_div}	{
+					SET_YYLLOC();
+					return INTEGER_DIVISION;
 				}
 
 {equals_greater} {
@@ -1049,7 +1063,7 @@ other			.
 						if (keyword_text[yyleng - 1] == '\0') {
 							yyless(yyleng - 1);
 						}
-						yylval->keyword = keyword->name;
+						yylval->keyword = keyword_text;
 						return keyword->value;
 					}
 

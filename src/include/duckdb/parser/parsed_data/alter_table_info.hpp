@@ -8,31 +8,34 @@
 
 #pragma once
 
-#include "duckdb/parser/parsed_data/parse_info.hpp"
+#include "duckdb/parser/parsed_data/alter_info.hpp"
 #include "duckdb/parser/column_definition.hpp"
-#include "duckdb/common/enums/catalog_type.hpp"
+#include "duckdb/parser/constraint.hpp"
+#include "duckdb/parser/parsed_data/parse_info.hpp"
 
 namespace duckdb {
 
-enum class AlterType : uint8_t { INVALID = 0, ALTER_TABLE = 1, ALTER_VIEW = 2 };
+enum class AlterForeignKeyType : uint8_t { AFT_ADD = 0, AFT_DELETE = 1 };
 
-struct AlterInfo : public ParseInfo {
-	AlterInfo(AlterType type, string schema, string name) : type(type), schema(schema), name(name) {
-	}
-	~AlterInfo() override {
-	}
+//===--------------------------------------------------------------------===//
+// Change Ownership
+//===--------------------------------------------------------------------===//
+struct ChangeOwnershipInfo : public AlterInfo {
+	ChangeOwnershipInfo(CatalogType entry_catalog_type, string entry_catalog, string entry_schema, string entry_name,
+	                    string owner_schema, string owner_name, OnEntryNotFound if_not_found);
 
-	AlterType type;
-	//! Schema name to alter
-	string schema;
-	//! Entry name to alter
-	string name;
+	// Catalog type refers to the entry type, since this struct is usually built from an
+	// ALTER <TYPE> <schema>.<name> OWNED BY <owner_schema>.<owner_name> statement
+	// here it is only possible to know the type of who is to be owned
+	CatalogType entry_catalog_type;
+
+	string owner_schema;
+	string owner_name;
 
 public:
-	virtual CatalogType GetCatalogType() = 0;
-	virtual unique_ptr<AlterInfo> Copy() const = 0;
-	virtual void Serialize(Serializer &serializer);
-	static unique_ptr<AlterInfo> Deserialize(Deserializer &source);
+	CatalogType GetCatalogType() const override;
+	unique_ptr<AlterInfo> Copy() const override;
+	void Serialize(FieldWriter &writer) const override;
 };
 
 //===--------------------------------------------------------------------===//
@@ -45,36 +48,37 @@ enum class AlterTableType : uint8_t {
 	ADD_COLUMN = 3,
 	REMOVE_COLUMN = 4,
 	ALTER_COLUMN_TYPE = 5,
-	SET_DEFAULT = 6
+	SET_DEFAULT = 6,
+	FOREIGN_KEY_CONSTRAINT = 7,
+	SET_NOT_NULL = 8,
+	DROP_NOT_NULL = 9
 };
 
 struct AlterTableInfo : public AlterInfo {
-	AlterTableInfo(AlterTableType type, string schema, string table)
-	    : AlterInfo(AlterType::ALTER_TABLE, schema, table), alter_table_type(type) {
-	}
-	~AlterTableInfo() override {
-	}
+	AlterTableInfo(AlterTableType type, AlterEntryData data);
+	~AlterTableInfo() override;
 
 	AlterTableType alter_table_type;
 
 public:
-	CatalogType GetCatalogType() override {
-		return CatalogType::TABLE_ENTRY;
-	}
-	void Serialize(Serializer &serializer) override;
-	static unique_ptr<AlterInfo> Deserialize(Deserializer &source);
+	CatalogType GetCatalogType() const override;
+	void Serialize(FieldWriter &writer) const override;
+	virtual void SerializeAlterTable(FieldWriter &writer) const = 0;
+	static unique_ptr<AlterInfo> Deserialize(FieldReader &reader);
+
+	void FormatSerialize(FormatSerializer &serializer) const override;
+	static unique_ptr<AlterInfo> FormatDeserialize(FormatDeserializer &deserializer);
+
+protected:
+	AlterTableInfo(AlterTableType type);
 };
 
 //===--------------------------------------------------------------------===//
 // RenameColumnInfo
 //===--------------------------------------------------------------------===//
 struct RenameColumnInfo : public AlterTableInfo {
-	RenameColumnInfo(string schema, string table, string old_name_p, string new_name_p)
-	    : AlterTableInfo(AlterTableType::RENAME_COLUMN, move(schema), move(table)), old_name(move(old_name_p)),
-	      new_name(move(new_name_p)) {
-	}
-	~RenameColumnInfo() override {
-	}
+	RenameColumnInfo(AlterEntryData data, string old_name_p, string new_name_p);
+	~RenameColumnInfo() override;
 
 	//! Column old name
 	string old_name;
@@ -83,81 +87,97 @@ struct RenameColumnInfo : public AlterTableInfo {
 
 public:
 	unique_ptr<AlterInfo> Copy() const override;
-	void Serialize(Serializer &serializer) override;
-	static unique_ptr<AlterInfo> Deserialize(Deserializer &source, string schema, string table);
+	void SerializeAlterTable(FieldWriter &writer) const override;
+	static unique_ptr<AlterInfo> Deserialize(FieldReader &reader, AlterEntryData data);
+
+	void FormatSerialize(FormatSerializer &serializer) const override;
+	static unique_ptr<AlterTableInfo> FormatDeserialize(FormatDeserializer &deserializer);
+
+private:
+	RenameColumnInfo();
 };
 
 //===--------------------------------------------------------------------===//
 // RenameTableInfo
 //===--------------------------------------------------------------------===//
 struct RenameTableInfo : public AlterTableInfo {
-	RenameTableInfo(string schema, string table, string new_name)
-	    : AlterTableInfo(AlterTableType::RENAME_TABLE, schema, table), new_table_name(new_name) {
-	}
-	~RenameTableInfo() override {
-	}
+	RenameTableInfo(AlterEntryData data, string new_name);
+	~RenameTableInfo() override;
 
 	//! Relation new name
 	string new_table_name;
 
 public:
 	unique_ptr<AlterInfo> Copy() const override;
-	void Serialize(Serializer &serializer) override;
-	static unique_ptr<AlterInfo> Deserialize(Deserializer &source, string schema, string table);
+	void SerializeAlterTable(FieldWriter &writer) const override;
+	static unique_ptr<AlterInfo> Deserialize(FieldReader &reader, AlterEntryData data);
+
+	void FormatSerialize(FormatSerializer &serializer) const override;
+	static unique_ptr<AlterTableInfo> FormatDeserialize(FormatDeserializer &deserializer);
+
+private:
+	RenameTableInfo();
 };
 
 //===--------------------------------------------------------------------===//
 // AddColumnInfo
 //===--------------------------------------------------------------------===//
 struct AddColumnInfo : public AlterTableInfo {
-	AddColumnInfo(string schema, string table, ColumnDefinition new_column)
-	    : AlterTableInfo(AlterTableType::ADD_COLUMN, schema, table), new_column(move(new_column)) {
-	}
-	~AddColumnInfo() override {
-	}
+	AddColumnInfo(AlterEntryData data, ColumnDefinition new_column, bool if_column_not_exists);
+	~AddColumnInfo() override;
 
 	//! New column
 	ColumnDefinition new_column;
+	//! Whether or not an error should be thrown if the column exist
+	bool if_column_not_exists;
 
 public:
 	unique_ptr<AlterInfo> Copy() const override;
-	void Serialize(Serializer &serializer) override;
-	static unique_ptr<AlterInfo> Deserialize(Deserializer &source, string schema, string table);
+	void SerializeAlterTable(FieldWriter &writer) const override;
+	static unique_ptr<AlterInfo> Deserialize(FieldReader &reader, AlterEntryData data);
+
+	void FormatSerialize(FormatSerializer &serializer) const override;
+	static unique_ptr<AlterTableInfo> FormatDeserialize(FormatDeserializer &deserializer);
+
+private:
+	explicit AddColumnInfo(ColumnDefinition new_column);
 };
 
 //===--------------------------------------------------------------------===//
 // RemoveColumnInfo
 //===--------------------------------------------------------------------===//
 struct RemoveColumnInfo : public AlterTableInfo {
-	RemoveColumnInfo(string schema, string table, string removed_column, bool if_exists)
-	    : AlterTableInfo(AlterTableType::REMOVE_COLUMN, schema, table), removed_column(move(removed_column)),
-	      if_exists(if_exists) {
-	}
-	~RemoveColumnInfo() override {
-	}
+	RemoveColumnInfo(AlterEntryData data, string removed_column, bool if_column_exists, bool cascade);
+	~RemoveColumnInfo() override;
 
 	//! The column to remove
 	string removed_column;
 	//! Whether or not an error should be thrown if the column does not exist
-	bool if_exists;
+	bool if_column_exists;
+	//! Whether or not the column should be removed if a dependency conflict arises (used by GENERATED columns)
+	bool cascade;
 
 public:
 	unique_ptr<AlterInfo> Copy() const override;
-	void Serialize(Serializer &serializer) override;
-	static unique_ptr<AlterInfo> Deserialize(Deserializer &source, string schema, string table);
+	void SerializeAlterTable(FieldWriter &writer) const override;
+	static unique_ptr<AlterInfo> Deserialize(FieldReader &reader, AlterEntryData data);
+	void FormatSerialize(FormatSerializer &serializer) const override;
+	static unique_ptr<AlterTableInfo> FormatDeserialize(FormatDeserializer &deserializer);
+	string GetColumnName() const override {
+		return removed_column;
+	}
+
+private:
+	RemoveColumnInfo();
 };
 
 //===--------------------------------------------------------------------===//
 // ChangeColumnTypeInfo
 //===--------------------------------------------------------------------===//
 struct ChangeColumnTypeInfo : public AlterTableInfo {
-	ChangeColumnTypeInfo(string schema, string table, string column_name, LogicalType target_type,
-	                     unique_ptr<ParsedExpression> expression)
-	    : AlterTableInfo(AlterTableType::ALTER_COLUMN_TYPE, schema, table), column_name(move(column_name)),
-	      target_type(move(target_type)), expression(move(expression)) {
-	}
-	~ChangeColumnTypeInfo() override {
-	}
+	ChangeColumnTypeInfo(AlterEntryData data, string column_name, LogicalType target_type,
+	                     unique_ptr<ParsedExpression> expression);
+	~ChangeColumnTypeInfo() override;
 
 	//! The column name to alter
 	string column_name;
@@ -168,20 +188,24 @@ struct ChangeColumnTypeInfo : public AlterTableInfo {
 
 public:
 	unique_ptr<AlterInfo> Copy() const override;
-	void Serialize(Serializer &serializer) override;
-	static unique_ptr<AlterInfo> Deserialize(Deserializer &source, string schema, string table);
+	void SerializeAlterTable(FieldWriter &writer) const override;
+	static unique_ptr<AlterInfo> Deserialize(FieldReader &reader, AlterEntryData data);
+	void FormatSerialize(FormatSerializer &serializer) const override;
+	static unique_ptr<AlterTableInfo> FormatDeserialize(FormatDeserializer &deserializer);
+	string GetColumnName() const override {
+		return column_name;
+	};
+
+private:
+	ChangeColumnTypeInfo();
 };
 
 //===--------------------------------------------------------------------===//
 // SetDefaultInfo
 //===--------------------------------------------------------------------===//
 struct SetDefaultInfo : public AlterTableInfo {
-	SetDefaultInfo(string schema, string table, string column_name, unique_ptr<ParsedExpression> new_default)
-	    : AlterTableInfo(AlterTableType::SET_DEFAULT, schema, table), column_name(move(column_name)),
-	      expression(move(new_default)) {
-	}
-	~SetDefaultInfo() override {
-	}
+	SetDefaultInfo(AlterEntryData data, string column_name, unique_ptr<ParsedExpression> new_default);
+	~SetDefaultInfo() override;
 
 	//! The column name to alter
 	string column_name;
@@ -190,8 +214,81 @@ struct SetDefaultInfo : public AlterTableInfo {
 
 public:
 	unique_ptr<AlterInfo> Copy() const override;
-	void Serialize(Serializer &serializer) override;
-	static unique_ptr<AlterInfo> Deserialize(Deserializer &source, string schema, string table);
+	void SerializeAlterTable(FieldWriter &writer) const override;
+	static unique_ptr<AlterInfo> Deserialize(FieldReader &reader, AlterEntryData data);
+	void FormatSerialize(FormatSerializer &serializer) const override;
+	static unique_ptr<AlterTableInfo> FormatDeserialize(FormatDeserializer &deserializer);
+
+private:
+	SetDefaultInfo();
+};
+
+//===--------------------------------------------------------------------===//
+// AlterForeignKeyInfo
+//===--------------------------------------------------------------------===//
+struct AlterForeignKeyInfo : public AlterTableInfo {
+	AlterForeignKeyInfo(AlterEntryData data, string fk_table, vector<string> pk_columns, vector<string> fk_columns,
+	                    vector<PhysicalIndex> pk_keys, vector<PhysicalIndex> fk_keys, AlterForeignKeyType type);
+	~AlterForeignKeyInfo() override;
+
+	string fk_table;
+	vector<string> pk_columns;
+	vector<string> fk_columns;
+	vector<PhysicalIndex> pk_keys;
+	vector<PhysicalIndex> fk_keys;
+	AlterForeignKeyType type;
+
+public:
+	unique_ptr<AlterInfo> Copy() const override;
+	void SerializeAlterTable(FieldWriter &writer) const override;
+	static unique_ptr<AlterInfo> Deserialize(FieldReader &reader, AlterEntryData data);
+	void FormatSerialize(FormatSerializer &serializer) const override;
+	static unique_ptr<AlterTableInfo> FormatDeserialize(FormatDeserializer &deserializer);
+
+private:
+	AlterForeignKeyInfo();
+};
+
+//===--------------------------------------------------------------------===//
+// SetNotNullInfo
+//===--------------------------------------------------------------------===//
+struct SetNotNullInfo : public AlterTableInfo {
+	SetNotNullInfo(AlterEntryData data, string column_name);
+	~SetNotNullInfo() override;
+
+	//! The column name to alter
+	string column_name;
+
+public:
+	unique_ptr<AlterInfo> Copy() const override;
+	void SerializeAlterTable(FieldWriter &writer) const override;
+	static unique_ptr<AlterInfo> Deserialize(FieldReader &reader, AlterEntryData data);
+	void FormatSerialize(FormatSerializer &serializer) const override;
+	static unique_ptr<AlterTableInfo> FormatDeserialize(FormatDeserializer &deserializer);
+
+private:
+	SetNotNullInfo();
+};
+
+//===--------------------------------------------------------------------===//
+// DropNotNullInfo
+//===--------------------------------------------------------------------===//
+struct DropNotNullInfo : public AlterTableInfo {
+	DropNotNullInfo(AlterEntryData data, string column_name);
+	~DropNotNullInfo() override;
+
+	//! The column name to alter
+	string column_name;
+
+public:
+	unique_ptr<AlterInfo> Copy() const override;
+	void SerializeAlterTable(FieldWriter &writer) const override;
+	static unique_ptr<AlterInfo> Deserialize(FieldReader &reader, AlterEntryData data);
+	void FormatSerialize(FormatSerializer &serializer) const override;
+	static unique_ptr<AlterTableInfo> FormatDeserialize(FormatDeserializer &deserializer);
+
+private:
+	DropNotNullInfo();
 };
 
 //===--------------------------------------------------------------------===//
@@ -200,39 +297,42 @@ public:
 enum class AlterViewType : uint8_t { INVALID = 0, RENAME_VIEW = 1 };
 
 struct AlterViewInfo : public AlterInfo {
-	AlterViewInfo(AlterViewType type, string schema, string view)
-	    : AlterInfo(AlterType::ALTER_VIEW, schema, view), alter_view_type(type) {
-	}
-	~AlterViewInfo() override {
-	}
+	AlterViewInfo(AlterViewType type, AlterEntryData data);
+	~AlterViewInfo() override;
 
 	AlterViewType alter_view_type;
 
 public:
-	CatalogType GetCatalogType() override {
-		return CatalogType::VIEW_ENTRY;
-	}
-	void Serialize(Serializer &serializer) override;
-	static unique_ptr<AlterInfo> Deserialize(Deserializer &source);
+	CatalogType GetCatalogType() const override;
+	void Serialize(FieldWriter &writer) const override;
+	virtual void SerializeAlterView(FieldWriter &writer) const = 0;
+	static unique_ptr<AlterInfo> Deserialize(FieldReader &reader);
+	void FormatSerialize(FormatSerializer &serializer) const override;
+	static unique_ptr<AlterInfo> FormatDeserialize(FormatDeserializer &deserializer);
+
+protected:
+	AlterViewInfo(AlterViewType type);
 };
 
 //===--------------------------------------------------------------------===//
 // RenameViewInfo
 //===--------------------------------------------------------------------===//
 struct RenameViewInfo : public AlterViewInfo {
-	RenameViewInfo(string schema, string view, string new_name)
-	    : AlterViewInfo(AlterViewType::RENAME_VIEW, schema, view), new_view_name(new_name) {
-	}
-	~RenameViewInfo() override {
-	}
+	RenameViewInfo(AlterEntryData data, string new_name);
+	~RenameViewInfo() override;
 
 	//! Relation new name
 	string new_view_name;
 
 public:
 	unique_ptr<AlterInfo> Copy() const override;
-	void Serialize(Serializer &serializer) override;
-	static unique_ptr<AlterInfo> Deserialize(Deserializer &source, string schema, string table);
+	void SerializeAlterView(FieldWriter &writer) const override;
+	static unique_ptr<AlterInfo> Deserialize(FieldReader &reader, AlterEntryData data);
+	void FormatSerialize(FormatSerializer &serializer) const override;
+	static unique_ptr<AlterViewInfo> FormatDeserialize(FormatDeserializer &deserializer);
+
+private:
+	RenameViewInfo();
 };
 
 } // namespace duckdb

@@ -1,5 +1,4 @@
 add_subdirectory(expression_executor)
-add_subdirectory(merge_join)
 add_subdirectory(nested_loop_join)
 add_subdirectory(operator)
 add_subdirectory(physical_plan)
@@ -21,6 +20,7 @@ add_library_unity(
   physical_plan_generator.cpp
   radix_partitioned_hashtable.cpp
   reservoir_sample.cpp
+  window_executor.cpp
   window_segment_tree.cpp)
 set(ALL_OBJECT_FILES
     ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:duckdb_execution>

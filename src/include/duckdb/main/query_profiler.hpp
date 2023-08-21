@@ -17,11 +17,13 @@
 #include "duckdb/common/winapi.hpp"
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/execution/expression_executor_state.hpp"
+#include "duckdb/common/reference_map.hpp"
 #include <stack>
 #include "duckdb/common/pair.hpp"
 #include "duckdb/common/deque.hpp"
 
 namespace duckdb {
+class ClientContext;
 class ExpressionExecutor;
 class PhysicalOperator;
 class SQLStatement;
@@ -40,7 +42,7 @@ struct ExpressionInfo {
 	//! The function Name
 	string function_name;
 	//! The function time
-	uint64_t function_time;
+	uint64_t function_time = 0;
 	//! Count the number of ALL tuples
 	uint64_t tuples_count = 0;
 	//! Count the number of tuples sampled
@@ -99,41 +101,31 @@ class OperatorProfiler {
 public:
 	DUCKDB_API explicit OperatorProfiler(bool enabled);
 
-	DUCKDB_API void StartOperator(const PhysicalOperator *phys_op);
-	DUCKDB_API void EndOperator(DataChunk *chunk);
-	DUCKDB_API void Flush(const PhysicalOperator *phys_op, ExpressionExecutor *expression_executor, const string &name,
+	DUCKDB_API void StartOperator(optional_ptr<const PhysicalOperator> phys_op);
+	DUCKDB_API void EndOperator(optional_ptr<DataChunk> chunk);
+	DUCKDB_API void Flush(const PhysicalOperator &phys_op, ExpressionExecutor &expression_executor, const string &name,
 	                      int id);
 
 	~OperatorProfiler() {
 	}
 
 private:
-	void AddTiming(const PhysicalOperator *op, double time, idx_t elements);
+	void AddTiming(const PhysicalOperator &op, double time, idx_t elements);
 
 	//! Whether or not the profiler is enabled
 	bool enabled;
 	//! The timer used to time the execution time of the individual Physical Operators
-	Profiler<system_clock> op;
+	Profiler op;
 	//! The stack of Physical Operators that are currently active
-	const PhysicalOperator *active_operator;
+	optional_ptr<const PhysicalOperator> active_operator;
 	//! A mapping of physical operators to recorded timings
-	unordered_map<const PhysicalOperator *, OperatorInformation> timings;
+	reference_map_t<const PhysicalOperator, OperatorInformation> timings;
 };
 
 //! The QueryProfiler can be used to measure timings of queries
 class QueryProfiler {
 public:
-	DUCKDB_API QueryProfiler()
-	    : automatic_print_format(ProfilerPrintFormat::NONE), enabled(false), detailed_enabled(false), running(false),
-	      query_requires_profiling(false), is_explain_analyze(false), stored_enabled(false),
-	      stored_automatic_print_format(ProfilerPrintFormat::NONE) {
-	}
-
-	//! The format to automatically print query profiling information in (default: disabled)
-	ProfilerPrintFormat automatic_print_format;
-	//! The file to save query profiling information to, instead of printing it to the console (empty = print to
-	//! console)
-	string save_location;
+	DUCKDB_API QueryProfiler(ClientContext &context);
 
 public:
 	struct TreeNode {
@@ -148,37 +140,22 @@ public:
 	// Propagate save_location, enabled, detailed_enabled and automatic_print_format.
 	void Propagate(QueryProfiler &qp);
 
-	using TreeMap = unordered_map<const PhysicalOperator *, TreeNode *>;
+	using TreeMap = reference_map_t<const PhysicalOperator, reference<TreeNode>>;
 
 private:
-	unique_ptr<TreeNode> CreateTree(PhysicalOperator *root, idx_t depth = 0);
+	unique_ptr<TreeNode> CreateTree(const PhysicalOperator &root, idx_t depth = 0);
 	void Render(const TreeNode &node, std::ostream &str) const;
-	//! The lock used for flushing information from a thread into the global query profiler
-	mutex flush_lock;
 
 public:
-	DUCKDB_API void Enable() {
-		enabled = true;
-		detailed_enabled = false;
-	}
+	DUCKDB_API bool IsEnabled() const;
+	DUCKDB_API bool IsDetailedEnabled() const;
+	DUCKDB_API ProfilerPrintFormat GetPrintFormat() const;
+	DUCKDB_API bool PrintOptimizerOutput() const;
+	DUCKDB_API string GetSaveLocation() const;
 
-	DUCKDB_API void DetailedEnable() {
-		detailed_enabled = true;
-	}
+	DUCKDB_API static QueryProfiler &Get(ClientContext &context);
 
-	DUCKDB_API void Disable() {
-		enabled = false;
-	}
-
-	DUCKDB_API bool IsEnabled() {
-		return enabled;
-	}
-
-	bool IsDetailedEnabled() const {
-		return detailed_enabled;
-	}
-
-	DUCKDB_API void StartQuery(string query, bool is_explain_analyze = false);
+	DUCKDB_API void StartQuery(string query, bool is_explain_analyze = false, bool start_at_optimizer = false);
 	DUCKDB_API void EndQuery();
 
 	DUCKDB_API void StartExplainAnalyze();
@@ -189,11 +166,15 @@ public:
 	DUCKDB_API void StartPhase(string phase);
 	DUCKDB_API void EndPhase();
 
-	DUCKDB_API void Initialize(PhysicalOperator *root);
+	DUCKDB_API void Initialize(const PhysicalOperator &root);
 
-	DUCKDB_API string ToString(bool print_optimizer_output = false) const;
-	DUCKDB_API void ToStream(std::ostream &str, bool print_optimizer_output = false) const;
+	DUCKDB_API string QueryTreeToString() const;
+	DUCKDB_API void QueryTreeToStream(std::ostream &str) const;
 	DUCKDB_API void Print();
+
+	//! return the printed as a string. Unlike ToString, which is always formatted as a string,
+	//! the return value is formatted based on the current print format (see GetPrintFormat()).
+	DUCKDB_API string ToString() const;
 
 	DUCKDB_API string ToJSON() const;
 	DUCKDB_API void WriteToFile(const char *path, string &info) const;
@@ -205,13 +186,14 @@ public:
 	void Finalize(TreeNode &node);
 
 private:
-	//! Whether or not query profiling is enabled
-	bool enabled;
-	//! Whether or not detailed query profiling is enabled
-	bool detailed_enabled;
+	ClientContext &context;
+
 	//! Whether or not the query profiler is running
 	bool running;
+	//! The lock used for flushing information from a thread into the global query profiler
+	mutex flush_lock;
 
+	//! Whether or not the query requires profiling
 	bool query_requires_profiling;
 
 	//! The root of the query tree
@@ -219,14 +201,11 @@ private:
 	//! The query string
 	string query;
 	//! The timer used to time the execution time of the entire query
-	Profiler<system_clock> main_query;
+	Profiler main_query;
 	//! A map of a Physical Operator pointer to a tree node
 	TreeMap tree_map;
-
+	//! Whether or not we are running as part of a explain_analyze query
 	bool is_explain_analyze;
-	bool stored_enabled;
-	ProfilerPrintFormat stored_automatic_print_format;
-	string stored_save_location;
 
 public:
 	const TreeMap &GetTreeMap() const {
@@ -235,7 +214,7 @@ public:
 
 private:
 	//! The timer used to time the individual phases of the planning process
-	Profiler<system_clock> phase_profiler;
+	Profiler phase_profiler;
 	//! A mapping of the phase names to the timings
 	using PhaseTimingStorage = unordered_map<string, double>;
 	PhaseTimingStorage phase_timings;
@@ -254,13 +233,15 @@ private:
 //! The QueryProfilerHistory can be used to access the profiler of previous queries
 class QueryProfilerHistory {
 private:
+	static constexpr uint64_t DEFAULT_SIZE = 20;
+
 	//! Previous Query profilers
-	deque<pair<transaction_t, unique_ptr<QueryProfiler>>> prev_profilers;
+	deque<pair<transaction_t, shared_ptr<QueryProfiler>>> prev_profilers;
 	//! Previous Query profilers size
-	uint64_t prev_profilers_size = 20;
+	uint64_t prev_profilers_size = DEFAULT_SIZE;
 
 public:
-	deque<pair<transaction_t, unique_ptr<QueryProfiler>>> &GetPrevProfilers() {
+	deque<pair<transaction_t, shared_ptr<QueryProfiler>>> &GetPrevProfilers() {
 		return prev_profilers;
 	}
 	QueryProfilerHistory() {
@@ -276,6 +257,9 @@ public:
 public:
 	void SetProfilerHistorySize(uint64_t size) {
 		this->prev_profilers_size = size;
+	}
+	void ResetProfilerHistorySize() {
+		this->prev_profilers_size = DEFAULT_SIZE;
 	}
 };
 } // namespace duckdb

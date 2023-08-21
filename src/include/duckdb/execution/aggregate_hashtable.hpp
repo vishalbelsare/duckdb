@@ -8,12 +8,16 @@
 
 #pragma once
 
+#include "duckdb/common/types/row/tuple_data_collection.hpp"
 #include "duckdb/execution/base_aggregate_hashtable.hpp"
+#include "duckdb/storage/arena_allocator.hpp"
+#include "duckdb/storage/buffer/buffer_handle.hpp"
 
 namespace duckdb {
 class BlockHandle;
 class BufferHandle;
-class RowDataCollection;
+
+struct FlushMoveState;
 
 //! GroupedAggregateHashTable is a linear probing HT that is used for computing
 //! aggregates
@@ -54,27 +58,60 @@ struct aggr_ht_entry_32 {
 
 enum HtEntryType { HT_WIDTH_32, HT_WIDTH_64 };
 
+struct AggregateHTScanState {
+	mutex lock;
+	TupleDataScanState scan_state;
+};
+
+struct AggregateHTAppendState {
+	AggregateHTAppendState();
+
+	Vector ht_offsets;
+	Vector hash_salts;
+	SelectionVector group_compare_vector;
+	SelectionVector no_match_vector;
+	SelectionVector empty_vector;
+	SelectionVector new_groups;
+	Vector addresses;
+	unsafe_unique_array<UnifiedVectorFormat> group_data;
+	DataChunk group_chunk;
+
+	TupleDataChunkState chunk_state;
+	bool chunk_state_initialized;
+};
+
 class GroupedAggregateHashTable : public BaseAggregateHashTable {
 public:
-	GroupedAggregateHashTable(BufferManager &buffer_manager, vector<LogicalType> group_types,
+	//! The hash table load factor, when a resize is triggered
+	constexpr static float LOAD_FACTOR = 1.5;
+	constexpr static uint8_t HASH_WIDTH = sizeof(hash_t);
+
+public:
+	GroupedAggregateHashTable(ClientContext &context, Allocator &allocator, vector<LogicalType> group_types,
 	                          vector<LogicalType> payload_types, const vector<BoundAggregateExpression *> &aggregates,
-	                          HtEntryType entry_type = HtEntryType::HT_WIDTH_64);
-	GroupedAggregateHashTable(BufferManager &buffer_manager, vector<LogicalType> group_types,
+	                          HtEntryType entry_type = HtEntryType::HT_WIDTH_64,
+	                          idx_t initial_capacity = InitialCapacity());
+	GroupedAggregateHashTable(ClientContext &context, Allocator &allocator, vector<LogicalType> group_types,
 	                          vector<LogicalType> payload_types, vector<AggregateObject> aggregates,
-	                          HtEntryType entry_type = HtEntryType::HT_WIDTH_64);
-	GroupedAggregateHashTable(BufferManager &buffer_manager, vector<LogicalType> group_types);
+	                          HtEntryType entry_type = HtEntryType::HT_WIDTH_64,
+	                          idx_t initial_capacity = InitialCapacity());
+	GroupedAggregateHashTable(ClientContext &context, Allocator &allocator, vector<LogicalType> group_types);
 	~GroupedAggregateHashTable() override;
 
+public:
 	//! Add the given data to the HT, computing the aggregates grouped by the
 	//! data in the group chunk. When resize = true, aggregates will not be
 	//! computed but instead just assigned.
-	idx_t AddChunk(DataChunk &groups, DataChunk &payload);
-	idx_t AddChunk(DataChunk &groups, Vector &group_hashes, DataChunk &payload);
+	idx_t AddChunk(AggregateHTAppendState &state, DataChunk &groups, DataChunk &payload,
+	               const unsafe_vector<idx_t> &filter);
+	idx_t AddChunk(AggregateHTAppendState &state, DataChunk &groups, Vector &group_hashes, DataChunk &payload,
+	               const unsafe_vector<idx_t> &filter);
+	idx_t AddChunk(AggregateHTAppendState &state, DataChunk &groups, DataChunk &payload, AggregateType filter);
 
 	//! Scan the HT starting from the scan_position until the result and group
 	//! chunks are filled. scan_position will be updated by this function.
 	//! Returns the amount of elements found.
-	idx_t Scan(idx_t &scan_position, DataChunk &result);
+	idx_t Scan(TupleDataParallelScanState &gstate, TupleDataLocalScanState &lstate, DataChunk &result);
 
 	//! Fetch the aggregates for specific groups from the HT and place them in the result
 	void FetchAggregates(DataChunk &groups, DataChunk &result);
@@ -82,93 +119,108 @@ public:
 	//! Finds or creates groups in the hashtable using the specified group keys. The addresses vector will be filled
 	//! with pointers to the groups in the hash table, and the new_groups selection vector will point to the newly
 	//! created groups. The return value is the amount of newly created groups.
-	idx_t FindOrCreateGroups(DataChunk &groups, Vector &group_hashes, Vector &addresses_out,
+	idx_t FindOrCreateGroups(AggregateHTAppendState &state, DataChunk &groups, Vector &group_hashes,
+	                         Vector &addresses_out, SelectionVector &new_groups_out);
+	idx_t FindOrCreateGroups(AggregateHTAppendState &state, DataChunk &groups, Vector &addresses_out,
 	                         SelectionVector &new_groups_out);
-	idx_t FindOrCreateGroups(DataChunk &groups, Vector &addresses_out, SelectionVector &new_groups_out);
-	void FindOrCreateGroups(DataChunk &groups, Vector &addresses_out);
+	void FindOrCreateGroups(AggregateHTAppendState &state, DataChunk &groups, Vector &addresses_out);
 
 	//! Executes the filter(if any) and update the aggregates
 	void Combine(GroupedAggregateHashTable &other);
 
-	idx_t Size() {
-		return entries;
+	//! Appends the data in the other HT to this one
+	void Append(GroupedAggregateHashTable &other);
+
+	TupleDataCollection &GetDataCollection() {
+		return *data_collection;
 	}
 
-	idx_t MaxCapacity();
+	idx_t Count() const {
+		return data_collection->Count();
+	}
 
-	void Partition(vector<GroupedAggregateHashTable *> &partition_hts, hash_t mask, idx_t shift);
+	idx_t DataSize() const {
+		return data_collection->SizeInBytes();
+	}
+
+	static idx_t InitialCapacity();
+	idx_t Capacity() {
+		return capacity;
+	}
+
+	static idx_t FirstPartSize(idx_t count, HtEntryType entry_type) {
+		idx_t entry_size = entry_type == HT_WIDTH_32 ? sizeof(aggr_ht_entry_32) : sizeof(aggr_ht_entry_64);
+		return NextPowerOfTwo(count * 2L) * entry_size;
+	}
+
+	idx_t TotalSize() const {
+		return DataSize() + FirstPartSize(Count(), entry_type);
+	}
+
+	idx_t ResizeThreshold();
+	idx_t MaxCapacity();
+	static idx_t GetMaxCapacity(HtEntryType entry_type, idx_t tuple_size);
+
+	void Partition(vector<GroupedAggregateHashTable *> &partition_hts, idx_t radix_bits, bool sink_done);
+	void InitializeFirstPart();
 
 	void Finalize();
-
-	//! The stringheap of the AggregateHashTable
-	unique_ptr<RowDataCollection> string_heap;
-
-	//! The hash table load factor, when a resize is triggered
-	constexpr static float LOAD_FACTOR = 1.5;
-	constexpr static uint8_t HASH_WIDTH = sizeof(hash_t);
 
 private:
 	HtEntryType entry_type;
 
-	//! The total tuple size
-	idx_t tuple_size;
-	//! The amount of tuples that fit in a single block
-	idx_t tuples_per_block;
-	//! The capacity of the HT. This can be increased using
-	//! GroupedAggregateHashTable::Resize
+	//! The capacity of the HT. This can be increased using GroupedAggregateHashTable::Resize
 	idx_t capacity;
-	//! The amount of entries stored in the HT currently
-	idx_t entries;
+	//! Tuple width
+	idx_t tuple_size;
+	//! Tuples per block
+	idx_t tuples_per_block;
 	//! The data of the HT
-	vector<unique_ptr<BufferHandle>> payload_hds;
+	unique_ptr<TupleDataCollection> data_collection;
+	TupleDataPinState td_pin_state;
 	vector<data_ptr_t> payload_hds_ptrs;
 
 	//! The hashes of the HT
-	unique_ptr<BufferHandle> hashes_hdl;
+	AllocatedData hashes_hdl;
 	data_ptr_t hashes_hdl_ptr;
-	data_ptr_t hashes_end_ptr; // of hashes
-	idx_t hash_offset;         // Offset into the layout of the hash column
+	idx_t hash_offset; // Offset into the layout of the hash column
 
 	hash_t hash_prefix_shift;
-	idx_t payload_page_offset;
 
 	//! Bitmask for getting relevant bits from the hashes to determine the position
 	hash_t bitmask;
 
-	vector<unique_ptr<GroupedAggregateHashTable>> distinct_hashes;
-
 	bool is_finalized;
 
-	// some stuff from FindOrCreateGroupsInternal() to avoid allocation there
-	Vector ht_offsets;
-	Vector hash_salts;
-	SelectionVector group_compare_vector;
-	SelectionVector no_match_vector;
-	SelectionVector empty_vector;
 	vector<ExpressionType> predicates;
+
+	//! The active arena allocator used by the aggregates for their internal state
+	shared_ptr<ArenaAllocator> aggregate_allocator;
+	//! Owning arena allocators that this HT has data from
+	vector<shared_ptr<ArenaAllocator>> stored_allocators;
 
 private:
 	GroupedAggregateHashTable(const GroupedAggregateHashTable &) = delete;
 
-	//! Resize the HT to the specified size. Must be larger than the current
-	//! size.
 	void Destroy();
-
 	void Verify();
-
-	void FlushMove(Vector &source_addresses, Vector &source_hashes, idx_t count);
-	void NewBlock();
-
 	template <class ENTRY>
 	void VerifyInternal();
+	//! Resize the HT to the specified size. Must be larger than the current size.
 	template <class ENTRY>
 	void Resize(idx_t size);
+	//! Initializes the first part of the HT
 	template <class ENTRY>
-	idx_t FindOrCreateGroupsInternal(DataChunk &groups, Vector &group_hashes, Vector &addresses,
+	void InitializeHashes();
+	//! Does the actual group matching / creation
+	template <class ENTRY>
+	idx_t FindOrCreateGroupsInternal(DataChunk &groups, Vector &group_hashes_v, Vector &addresses_v,
 	                                 SelectionVector &new_groups);
-
-	template <class FUNC = std::function<void(idx_t, idx_t, data_ptr_t)>>
-	void PayloadApply(FUNC fun);
+	//! Updates payload_hds_ptrs with the new pointers (after appending to data_collection)
+	void UpdateBlockPointers();
+	template <class ENTRY>
+	idx_t FindOrCreateGroupsInternal(AggregateHTAppendState &state, DataChunk &groups, Vector &group_hashes,
+	                                 Vector &addresses, SelectionVector &new_groups);
 };
 
 } // namespace duckdb

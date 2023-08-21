@@ -2,7 +2,7 @@
 
 namespace duckdb {
 
-void Binder::BindNamedParameters(unordered_map<string, LogicalType> &types, unordered_map<string, Value> &values,
+void Binder::BindNamedParameters(named_parameter_type_map_t &types, named_parameter_map_t &values,
                                  QueryErrorContext &error_context, string &func_name) {
 	for (auto &kv : values) {
 		auto entry = types.find(kv.first);
@@ -20,13 +20,13 @@ void Binder::BindNamedParameters(unordered_map<string, LogicalType> &types, unor
 			if (named_params.empty()) {
 				error_msg = "Function does not accept any named parameters.";
 			} else {
-				error_msg = "Candidates: " + named_params;
+				error_msg = "Candidates:\n" + named_params;
 			}
 			throw BinderException(error_context.FormatError("Invalid named parameter \"%s\" for function %s\n%s",
 			                                                kv.first, func_name, error_msg));
 		}
 		if (entry->second.id() != LogicalTypeId::ANY) {
-			kv.second = kv.second.CastAs(entry->second);
+			kv.second = kv.second.DefaultCastAs(entry->second);
 		}
 	}
 }

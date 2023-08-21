@@ -5,13 +5,14 @@ namespace duckdb {
 ExecuteStatement::ExecuteStatement() : SQLStatement(StatementType::EXECUTE_STATEMENT) {
 }
 
-unique_ptr<SQLStatement> ExecuteStatement::Copy() const {
-	auto result = make_unique<ExecuteStatement>();
-	result->name = name;
-	for (auto &value : values) {
-		result->values.push_back(value->Copy());
+ExecuteStatement::ExecuteStatement(const ExecuteStatement &other) : SQLStatement(other), name(other.name) {
+	for (const auto &item : other.named_values) {
+		named_values.emplace(std::make_pair(item.first, item.second->Copy()));
 	}
-	return move(result);
+}
+
+unique_ptr<SQLStatement> ExecuteStatement::Copy() const {
+	return unique_ptr<ExecuteStatement>(new ExecuteStatement(*this));
 }
 
 } // namespace duckdb

@@ -1,13 +1,20 @@
 #include "duckdb/parser/expression/window_expression.hpp"
 
 #include "duckdb/common/limits.hpp"
-#include "duckdb/common/serializer.hpp"
+#include "duckdb/common/field_writer.hpp"
 #include "duckdb/common/string_util.hpp"
+
+#include "duckdb/common/enum_util.hpp"
+#include "duckdb/common/serializer/format_serializer.hpp"
+#include "duckdb/common/serializer/format_deserializer.hpp"
 
 namespace duckdb {
 
-WindowExpression::WindowExpression(ExpressionType type, string schema, const string &function_name)
-    : ParsedExpression(type, ExpressionClass::WINDOW), schema(move(schema)),
+WindowExpression::WindowExpression(ExpressionType type) : ParsedExpression(type, ExpressionClass::WINDOW) {
+}
+
+WindowExpression::WindowExpression(ExpressionType type, string catalog_name, string schema, const string &function_name)
+    : ParsedExpression(type, ExpressionClass::WINDOW), catalog(std::move(catalog_name)), schema(std::move(schema)),
       function_name(StringUtil::Lower(function_name)), ignore_nulls(false) {
 	switch (type) {
 	case ExpressionType::WINDOW_AGGREGATE:
@@ -28,177 +35,81 @@ WindowExpression::WindowExpression(ExpressionType type, string schema, const str
 	}
 }
 
-string WindowExpression::GetName() const {
-	return !alias.empty() ? alias : function_name;
+ExpressionType WindowExpression::WindowToExpressionType(string &fun_name) {
+	if (fun_name == "rank") {
+		return ExpressionType::WINDOW_RANK;
+	} else if (fun_name == "rank_dense" || fun_name == "dense_rank") {
+		return ExpressionType::WINDOW_RANK_DENSE;
+	} else if (fun_name == "percent_rank") {
+		return ExpressionType::WINDOW_PERCENT_RANK;
+	} else if (fun_name == "row_number") {
+		return ExpressionType::WINDOW_ROW_NUMBER;
+	} else if (fun_name == "first_value" || fun_name == "first") {
+		return ExpressionType::WINDOW_FIRST_VALUE;
+	} else if (fun_name == "last_value" || fun_name == "last") {
+		return ExpressionType::WINDOW_LAST_VALUE;
+	} else if (fun_name == "nth_value") {
+		return ExpressionType::WINDOW_NTH_VALUE;
+	} else if (fun_name == "cume_dist") {
+		return ExpressionType::WINDOW_CUME_DIST;
+	} else if (fun_name == "lead") {
+		return ExpressionType::WINDOW_LEAD;
+	} else if (fun_name == "lag") {
+		return ExpressionType::WINDOW_LAG;
+	} else if (fun_name == "ntile") {
+		return ExpressionType::WINDOW_NTILE;
+	}
+	return ExpressionType::WINDOW_AGGREGATE;
 }
 
 string WindowExpression::ToString() const {
-	// Start with function call
-	string result = function_name + "(";
-	result += StringUtil::Join(children, children.size(), ", ",
-	                           [](const unique_ptr<ParsedExpression> &child) { return child->ToString(); });
-	// Lead/Lag extra arguments
-	if (offset_expr.get()) {
-		result += ", ";
-		result += offset_expr->ToString();
-	}
-	if (default_expr.get()) {
-		result += ", ";
-		result += default_expr->ToString();
-	}
-	// IGNORE NULLS
-	if (ignore_nulls) {
-		result += " IGNORE NULLS";
-	}
-	// Over clause
-	result += ") OVER(";
-	string sep;
-
-	// Partitions
-	if (!partitions.empty()) {
-		result += "PARTITION BY ";
-		result += StringUtil::Join(partitions, partitions.size(), ", ",
-		                           [](const unique_ptr<ParsedExpression> &partition) { return partition->ToString(); });
-		sep = " ";
-	}
-
-	// Orders
-	if (!orders.empty()) {
-		result += sep;
-		result += "ORDER BY ";
-		result +=
-		    StringUtil::Join(orders, orders.size(), ", ", [](const OrderByNode &order) { return order.ToString(); });
-		sep = " ";
-	}
-
-	// Rows/Range
-	string units = "ROWS";
-	string from;
-	switch (start) {
-	case WindowBoundary::CURRENT_ROW_RANGE:
-	case WindowBoundary::CURRENT_ROW_ROWS:
-		from = "CURRENT ROW";
-		units = (start == WindowBoundary::CURRENT_ROW_RANGE) ? "RANGE" : "ROWS";
-		break;
-	case WindowBoundary::UNBOUNDED_PRECEDING:
-		if (end != WindowBoundary::CURRENT_ROW_RANGE) {
-			from = "UNBOUNDED PRECEDING";
-		}
-		break;
-	case WindowBoundary::EXPR_PRECEDING_ROWS:
-	case WindowBoundary::EXPR_PRECEDING_RANGE:
-		from = start_expr->GetName() + " PRECEDING";
-		units = (start == WindowBoundary::EXPR_PRECEDING_RANGE) ? "RANGE" : "ROWS";
-		break;
-	case WindowBoundary::EXPR_FOLLOWING_ROWS:
-	case WindowBoundary::EXPR_FOLLOWING_RANGE:
-		from = start_expr->GetName() + " FOLLOWING";
-		units = (start == WindowBoundary::EXPR_FOLLOWING_RANGE) ? "RANGE" : "ROWS";
-		break;
-	default:
-		break;
-	}
-
-	string to;
-	switch (end) {
-	case WindowBoundary::CURRENT_ROW_RANGE:
-		if (start != WindowBoundary::UNBOUNDED_PRECEDING) {
-			to = "CURRENT ROW";
-			units = "RANGE";
-		}
-		break;
-	case WindowBoundary::CURRENT_ROW_ROWS:
-		to = "CURRENT ROW";
-		units = "ROWS";
-		break;
-	case WindowBoundary::UNBOUNDED_PRECEDING:
-		to = "UNBOUNDED PRECEDING";
-		break;
-	case WindowBoundary::EXPR_PRECEDING_ROWS:
-	case WindowBoundary::EXPR_PRECEDING_RANGE:
-		to = end_expr->GetName() + " PRECEDING";
-		units = (start == WindowBoundary::EXPR_PRECEDING_RANGE) ? "RANGE" : "ROWS";
-		break;
-	case WindowBoundary::EXPR_FOLLOWING_ROWS:
-	case WindowBoundary::EXPR_FOLLOWING_RANGE:
-		to = end_expr->GetName() + " FOLLOWING";
-		units = (start == WindowBoundary::EXPR_FOLLOWING_RANGE) ? "RANGE" : "ROWS";
-		break;
-	default:
-		break;
-	}
-
-	if (!from.empty() || !to.empty()) {
-		result += sep + units;
-	}
-	if (!from.empty() && !to.empty()) {
-		result += " BETWEEN ";
-		result += from;
-		result += " AND ";
-		result += to;
-	} else if (!from.empty()) {
-		result += " ";
-		result += from;
-	} else if (!to.empty()) {
-		result += " ";
-		result += to;
-	}
-
-	result += ")";
-
-	return result;
+	return ToString<WindowExpression, ParsedExpression, OrderByNode>(*this, schema, function_name);
 }
 
-bool WindowExpression::Equals(const WindowExpression *a, const WindowExpression *b) {
+bool WindowExpression::Equal(const WindowExpression &a, const WindowExpression &b) {
 	// check if the child expressions are equivalent
-	if (b->children.size() != a->children.size()) {
+	if (a.ignore_nulls != b.ignore_nulls) {
 		return false;
 	}
-	if (a->ignore_nulls != b->ignore_nulls) {
+	if (!ParsedExpression::ListEquals(a.children, b.children)) {
 		return false;
 	}
-	for (idx_t i = 0; i < a->children.size(); i++) {
-		if (!a->children[i]->Equals(b->children[i].get())) {
-			return false;
-		}
-	}
-	if (a->start != b->start || a->end != b->end) {
+	if (a.start != b.start || a.end != b.end) {
 		return false;
 	}
-	// check if the framing expressions are equivalent
-	if (!BaseExpression::Equals(a->start_expr.get(), b->start_expr.get()) ||
-	    !BaseExpression::Equals(a->end_expr.get(), b->end_expr.get()) ||
-	    !BaseExpression::Equals(a->offset_expr.get(), b->offset_expr.get()) ||
-	    !BaseExpression::Equals(a->default_expr.get(), b->default_expr.get())) {
+	// check if the framing expressions are equivalentbind_
+	if (!ParsedExpression::Equals(a.start_expr, b.start_expr) || !ParsedExpression::Equals(a.end_expr, b.end_expr) ||
+	    !ParsedExpression::Equals(a.offset_expr, b.offset_expr) ||
+	    !ParsedExpression::Equals(a.default_expr, b.default_expr)) {
 		return false;
 	}
 
 	// check if the partitions are equivalent
-	if (a->partitions.size() != b->partitions.size()) {
+	if (!ParsedExpression::ListEquals(a.partitions, b.partitions)) {
 		return false;
-	}
-	for (idx_t i = 0; i < a->partitions.size(); i++) {
-		if (!a->partitions[i]->Equals(b->partitions[i].get())) {
-			return false;
-		}
 	}
 	// check if the orderings are equivalent
-	if (a->orders.size() != b->orders.size()) {
+	if (a.orders.size() != b.orders.size()) {
 		return false;
 	}
-	for (idx_t i = 0; i < a->orders.size(); i++) {
-		if (a->orders[i].type != b->orders[i].type) {
+	for (idx_t i = 0; i < a.orders.size(); i++) {
+		if (a.orders[i].type != b.orders[i].type) {
 			return false;
 		}
-		if (!a->orders[i].expression->Equals(b->orders[i].expression.get())) {
+		if (!a.orders[i].expression->Equals(*b.orders[i].expression)) {
 			return false;
 		}
 	}
+	// check if the filter clauses are equivalent
+	if (!ParsedExpression::Equals(a.filter_expr, b.filter_expr)) {
+		return false;
+	}
+
 	return true;
 }
 
 unique_ptr<ParsedExpression> WindowExpression::Copy() const {
-	auto new_window = make_unique<WindowExpression>(type, schema, function_name);
+	auto new_window = make_uniq<WindowExpression>(type, catalog, schema, function_name);
 	new_window->CopyProperties(*this);
 
 	for (auto &child : children) {
@@ -213,6 +124,8 @@ unique_ptr<ParsedExpression> WindowExpression::Copy() const {
 		new_window->orders.emplace_back(o.type, o.null_order, o.expression->Copy());
 	}
 
+	new_window->filter_expr = filter_expr ? filter_expr->Copy() : nullptr;
+
 	new_window->start = start;
 	new_window->end = end;
 	new_window->start_expr = start_expr ? start_expr->Copy() : nullptr;
@@ -221,50 +134,57 @@ unique_ptr<ParsedExpression> WindowExpression::Copy() const {
 	new_window->default_expr = default_expr ? default_expr->Copy() : nullptr;
 	new_window->ignore_nulls = ignore_nulls;
 
-	return move(new_window);
+	return std::move(new_window);
 }
 
-void WindowExpression::Serialize(Serializer &serializer) {
-	ParsedExpression::Serialize(serializer);
-	serializer.WriteString(function_name);
-	serializer.WriteString(schema);
-	serializer.WriteList(children);
-	serializer.WriteList(partitions);
+void WindowExpression::Serialize(FieldWriter &writer) const {
+	auto &serializer = writer.GetSerializer();
+
+	writer.WriteString(function_name);
+	writer.WriteString(schema);
+	writer.WriteSerializableList(children);
+	writer.WriteSerializableList(partitions);
+	// FIXME: should not use serializer here (probably)?
 	D_ASSERT(orders.size() <= NumericLimits<uint32_t>::Maximum());
-	serializer.Write<uint32_t>((uint32_t)orders.size());
+	writer.WriteField<uint32_t>((uint32_t)orders.size());
 	for (auto &order : orders) {
 		order.Serialize(serializer);
 	}
-	serializer.Write<WindowBoundary>(start);
-	serializer.Write<WindowBoundary>(end);
+	writer.WriteField<WindowBoundary>(start);
+	writer.WriteField<WindowBoundary>(end);
 
-	serializer.WriteOptional(start_expr);
-	serializer.WriteOptional(end_expr);
-	serializer.WriteOptional(offset_expr);
-	serializer.WriteOptional(default_expr);
-	serializer.Write<bool>(ignore_nulls);
+	writer.WriteOptional(start_expr);
+	writer.WriteOptional(end_expr);
+	writer.WriteOptional(offset_expr);
+	writer.WriteOptional(default_expr);
+	writer.WriteField<bool>(ignore_nulls);
+	writer.WriteOptional(filter_expr);
+	writer.WriteString(catalog);
 }
 
-unique_ptr<ParsedExpression> WindowExpression::Deserialize(ExpressionType type, Deserializer &source) {
-	auto function_name = source.Read<string>();
-	auto schema = source.Read<string>();
-	auto expr = make_unique<WindowExpression>(type, schema, function_name);
-	source.ReadList<ParsedExpression>(expr->children);
-	source.ReadList<ParsedExpression>(expr->partitions);
+unique_ptr<ParsedExpression> WindowExpression::Deserialize(ExpressionType type, FieldReader &reader) {
+	auto function_name = reader.ReadRequired<string>();
+	auto schema = reader.ReadRequired<string>();
+	auto expr = make_uniq<WindowExpression>(type, INVALID_CATALOG, std::move(schema), function_name);
+	expr->children = reader.ReadRequiredSerializableList<ParsedExpression>();
+	expr->partitions = reader.ReadRequiredSerializableList<ParsedExpression>();
 
-	auto order_count = source.Read<uint32_t>();
+	auto order_count = reader.ReadRequired<uint32_t>();
+	auto &source = reader.GetSource();
 	for (idx_t i = 0; i < order_count; i++) {
-		expr->orders.push_back(OrderByNode::Deserialize((source)));
+		expr->orders.push_back(OrderByNode::Deserialize(source));
 	}
-	expr->start = source.Read<WindowBoundary>();
-	expr->end = source.Read<WindowBoundary>();
+	expr->start = reader.ReadRequired<WindowBoundary>();
+	expr->end = reader.ReadRequired<WindowBoundary>();
 
-	expr->start_expr = source.ReadOptional<ParsedExpression>();
-	expr->end_expr = source.ReadOptional<ParsedExpression>();
-	expr->offset_expr = source.ReadOptional<ParsedExpression>();
-	expr->default_expr = source.ReadOptional<ParsedExpression>();
-	expr->ignore_nulls = source.Read<bool>();
-	return move(expr);
+	expr->start_expr = reader.ReadOptional<ParsedExpression>(nullptr);
+	expr->end_expr = reader.ReadOptional<ParsedExpression>(nullptr);
+	expr->offset_expr = reader.ReadOptional<ParsedExpression>(nullptr);
+	expr->default_expr = reader.ReadOptional<ParsedExpression>(nullptr);
+	expr->ignore_nulls = reader.ReadRequired<bool>();
+	expr->filter_expr = reader.ReadOptional<ParsedExpression>(nullptr);
+	expr->catalog = reader.ReadField<string>(INVALID_CATALOG);
+	return std::move(expr);
 }
 
 } // namespace duckdb

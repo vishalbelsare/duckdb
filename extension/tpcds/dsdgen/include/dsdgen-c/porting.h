@@ -55,12 +55,7 @@
 #include <stdlib.h>
 #endif
 
-#ifndef WIN32
-#include <sys/types.h>
-#else
-#define int32_t __int32
-#define int64_t __int64
-#endif
+#include <stdint.h>
 
 #ifdef WIN32
 #include <sys/timeb.h>
@@ -82,7 +77,7 @@ char *strdup(const char *);
 #endif
 
 #ifdef WIN32
-#include <Winsock2.h>
+#include <winsock2.h>
 #include <windows.h>
 #include <winbase.h>
 #include <io.h>

@@ -9,53 +9,40 @@
 #pragma once
 
 #include <memory>
-#include <cstdint>
 #include "duckdb/common/string.hpp"
+#include "duckdb/common/winapi.hpp"
+#include "duckdb/common/unique_ptr.hpp"
+#include "duckdb/common/typedefs.hpp"
 
 namespace duckdb {
+class Serializer;
+class Deserializer;
+class FormatSerializer;
+class FormatDeserializer;
 
 //! inline std directives that we use frequently
+#ifndef DUCKDB_DEBUG_MOVE
 using std::move;
-using std::shared_ptr;
-using std::unique_ptr;
-using std::weak_ptr;
-using data_ptr = unique_ptr<char[]>;
-using std::make_shared;
+#endif
 
 // NOTE: there is a copy of this in the Postgres' parser grammar (gram.y)
-#define DEFAULT_SCHEMA "main"
-#define TEMP_SCHEMA    "temp"
-#define INVALID_SCHEMA ""
+#define DEFAULT_SCHEMA  "main"
+#define INVALID_SCHEMA  ""
+#define INVALID_CATALOG ""
+#define SYSTEM_CATALOG  "system"
+#define TEMP_CATALOG    "temp"
 
-//! a saner size_t for loop indices etc
-typedef uint64_t idx_t;
+DUCKDB_API bool IsInvalidSchema(const string &str);
+DUCKDB_API bool IsInvalidCatalog(const string &str);
 
-//! The type used for row identifiers
-typedef int64_t row_t;
-
-//! The type used for hashes
-typedef uint64_t hash_t;
-
-//! The value used to signify an invalid index entry
-extern const idx_t INVALID_INDEX;
-
-//! data pointers
-typedef uint8_t data_t;
-typedef data_t *data_ptr_t;
-typedef const data_t *const_data_ptr_t;
-
-//! Type used for the selection vector
-typedef uint32_t sel_t;
-//! Type used for transaction timestamps
-typedef idx_t transaction_t;
-
-//! Type used for column identifiers
-typedef idx_t column_t;
 //! Special value used to signify the ROW ID of a table
-extern const column_t COLUMN_IDENTIFIER_ROW_ID;
+DUCKDB_API extern const column_t COLUMN_IDENTIFIER_ROW_ID;
+DUCKDB_API bool IsRowIdColumnId(column_t column_id);
 
 //! The maximum row identifier used in tables
 extern const row_t MAX_ROW_ID;
+//! Transaction-local row IDs start at MAX_ROW_ID
+extern const row_t MAX_ROW_ID_LOCAL;
 
 extern const transaction_t TRANSACTION_ID_START;
 extern const transaction_t MAX_TRANSACTION_ID;
@@ -63,6 +50,11 @@ extern const transaction_t MAXIMUM_QUERY_ID;
 extern const transaction_t NOT_DELETED_ID;
 
 extern const double PI;
+
+struct DConstants {
+	//! The value used to signify an invalid index entry
+	static constexpr const idx_t INVALID_INDEX = idx_t(-1);
+};
 
 struct Storage {
 	//! The size of a hard disk sector, only really needed for Direct IO
@@ -79,6 +71,48 @@ struct Storage {
 	constexpr static int FILE_HEADER_SIZE = 4096;
 };
 
-uint64_t NextPowerOfTwo(uint64_t v);
+struct LogicalIndex {
+	explicit LogicalIndex(idx_t index) : index(index) {
+	}
+
+	idx_t index;
+
+	inline bool operator==(const LogicalIndex &rhs) const {
+		return index == rhs.index;
+	};
+	inline bool operator!=(const LogicalIndex &rhs) const {
+		return index != rhs.index;
+	};
+	inline bool operator<(const LogicalIndex &rhs) const {
+		return index < rhs.index;
+	};
+	bool IsValid() {
+		return index != DConstants::INVALID_INDEX;
+	}
+};
+
+struct PhysicalIndex {
+	explicit PhysicalIndex(idx_t index) : index(index) {
+	}
+
+	idx_t index;
+
+	inline bool operator==(const PhysicalIndex &rhs) const {
+		return index == rhs.index;
+	};
+	inline bool operator!=(const PhysicalIndex &rhs) const {
+		return index != rhs.index;
+	};
+	inline bool operator<(const PhysicalIndex &rhs) const {
+		return index < rhs.index;
+	};
+	bool IsValid() {
+		return index != DConstants::INVALID_INDEX;
+	}
+};
+
+DUCKDB_API bool IsPowerOfTwo(uint64_t v);
+DUCKDB_API uint64_t NextPowerOfTwo(uint64_t v);
+DUCKDB_API uint64_t PreviousPowerOfTwo(uint64_t v);
 
 } // namespace duckdb

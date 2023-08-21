@@ -1,9 +1,8 @@
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/function/scalar/nested_functions.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_parameter_expression.hpp"
 #include "duckdb/planner/expression_binder.hpp"
-#include "duckdb/storage/statistics/list_statistics.hpp"
-#include "duckdb/storage/statistics/validity_statistics.hpp"
 
 namespace duckdb {
 
@@ -22,21 +21,21 @@ static void ListConcatFunction(DataChunk &args, ExpressionState &state, Vector &
 		return;
 	}
 
-	VectorData lhs_data;
-	VectorData rhs_data;
-	lhs.Orrify(count, lhs_data);
-	rhs.Orrify(count, rhs_data);
-	auto lhs_entries = (list_entry_t *)lhs_data.data;
-	auto rhs_entries = (list_entry_t *)rhs_data.data;
+	UnifiedVectorFormat lhs_data;
+	UnifiedVectorFormat rhs_data;
+	lhs.ToUnifiedFormat(count, lhs_data);
+	rhs.ToUnifiedFormat(count, rhs_data);
+	auto lhs_entries = UnifiedVectorFormat::GetData<list_entry_t>(lhs_data);
+	auto rhs_entries = UnifiedVectorFormat::GetData<list_entry_t>(rhs_data);
 
 	auto lhs_list_size = ListVector::GetListSize(lhs);
 	auto rhs_list_size = ListVector::GetListSize(rhs);
 	auto &lhs_child = ListVector::GetEntry(lhs);
 	auto &rhs_child = ListVector::GetEntry(rhs);
-	VectorData lhs_child_data;
-	VectorData rhs_child_data;
-	lhs_child.Orrify(lhs_list_size, lhs_child_data);
-	rhs_child.Orrify(rhs_list_size, rhs_child_data);
+	UnifiedVectorFormat lhs_child_data;
+	UnifiedVectorFormat rhs_child_data;
+	lhs_child.ToUnifiedFormat(lhs_list_size, lhs_child_data);
+	rhs_child.ToUnifiedFormat(rhs_list_size, rhs_child_data);
 
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto result_entries = FlatVector::GetData<list_entry_t>(result);
@@ -79,44 +78,40 @@ static unique_ptr<FunctionData> ListConcatBind(ClientContext &context, ScalarFun
 
 	auto &lhs = arguments[0]->return_type;
 	auto &rhs = arguments[1]->return_type;
-	if (lhs.id() == LogicalTypeId::SQLNULL && rhs.id() == LogicalTypeId::SQLNULL) {
-		bound_function.return_type = LogicalType::SQLNULL;
+	if (lhs.id() == LogicalTypeId::UNKNOWN || rhs.id() == LogicalTypeId::UNKNOWN) {
+		throw ParameterNotResolvedException();
 	} else if (lhs.id() == LogicalTypeId::SQLNULL || rhs.id() == LogicalTypeId::SQLNULL) {
 		// we mimic postgres behaviour: list_concat(NULL, my_list) = my_list
-		bound_function.arguments[0] = lhs;
-		bound_function.arguments[1] = rhs;
-		bound_function.return_type = rhs.id() == LogicalTypeId::SQLNULL ? lhs : rhs;
+		auto return_type = rhs.id() == LogicalTypeId::SQLNULL ? lhs : rhs;
+		bound_function.arguments[0] = return_type;
+		bound_function.arguments[1] = return_type;
+		bound_function.return_type = return_type;
 	} else {
 		D_ASSERT(lhs.id() == LogicalTypeId::LIST);
 		D_ASSERT(rhs.id() == LogicalTypeId::LIST);
 
 		// Resolve list type
-		auto child_type = LogicalType::SQLNULL;
+		LogicalType child_type = LogicalType::SQLNULL;
 		for (const auto &argument : arguments) {
 			child_type = LogicalType::MaxLogicalType(child_type, ListType::GetChildType(argument->return_type));
 		}
-		ExpressionBinder::ResolveParameterType(child_type);
-		auto list_type = LogicalType::LIST(move(child_type));
+		auto list_type = LogicalType::LIST(child_type);
 
 		bound_function.arguments[0] = list_type;
 		bound_function.arguments[1] = list_type;
 		bound_function.return_type = list_type;
 	}
-	return make_unique<VariableReturnBindData>(bound_function.return_type);
+	return make_uniq<VariableReturnBindData>(bound_function.return_type);
 }
 
-static unique_ptr<BaseStatistics> ListConcatStats(ClientContext &context, BoundFunctionExpression &expr,
-                                                  FunctionData *bind_data,
-                                                  vector<unique_ptr<BaseStatistics>> &child_stats) {
+static unique_ptr<BaseStatistics> ListConcatStats(ClientContext &context, FunctionStatisticsInput &input) {
+	auto &child_stats = input.child_stats;
 	D_ASSERT(child_stats.size() == 2);
-	if (!child_stats[0] || !child_stats[1]) {
-		return nullptr;
-	}
 
-	auto &left_stats = (ListStatistics &)*child_stats[0];
-	auto &right_stats = (ListStatistics &)*child_stats[1];
+	auto &left_stats = child_stats[0];
+	auto &right_stats = child_stats[1];
 
-	auto stats = left_stats.Copy();
+	auto stats = left_stats.ToUnique();
 	stats->Merge(right_stats);
 
 	return stats;
@@ -124,9 +119,11 @@ static unique_ptr<BaseStatistics> ListConcatStats(ClientContext &context, BoundF
 
 ScalarFunction ListConcatFun::GetFunction() {
 	// the arguments and return types are actually set in the binder function
-	return ScalarFunction({LogicalType::LIST(LogicalType::ANY), LogicalType::LIST(LogicalType::ANY)},
-	                      LogicalType::LIST(LogicalType::ANY), ListConcatFunction, false, ListConcatBind, nullptr,
-	                      ListConcatStats);
+	auto fun = ScalarFunction({LogicalType::LIST(LogicalType::ANY), LogicalType::LIST(LogicalType::ANY)},
+	                          LogicalType::LIST(LogicalType::ANY), ListConcatFunction, ListConcatBind, nullptr,
+	                          ListConcatStats);
+	fun.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	return fun;
 }
 
 void ListConcatFun::RegisterFunction(BuiltinFunctions &set) {

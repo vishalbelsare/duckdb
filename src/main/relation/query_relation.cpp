@@ -1,36 +1,46 @@
 #include "duckdb/main/relation/query_relation.hpp"
 #include "duckdb/main/client_context.hpp"
-#include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/parser/parser.hpp"
 
 namespace duckdb {
 
-QueryRelation::QueryRelation(ClientContext &context, string query, string alias)
-    : Relation(context, RelationType::QUERY_RELATION), query(move(query)), alias(move(alias)) {
-	context.TryBindRelation(*this, this->columns);
+QueryRelation::QueryRelation(const std::shared_ptr<ClientContext> &context, unique_ptr<SelectStatement> select_stmt_p,
+                             string alias_p)
+    : Relation(context, RelationType::QUERY_RELATION), select_stmt(std::move(select_stmt_p)),
+      alias(std::move(alias_p)) {
+	context->TryBindRelation(*this, this->columns);
+}
+
+QueryRelation::~QueryRelation() {
+}
+
+unique_ptr<SelectStatement> QueryRelation::ParseStatement(ClientContext &context, const string &query,
+                                                          const string &error) {
+	Parser parser(context.GetParserOptions());
+	parser.ParseQuery(query);
+	if (parser.statements.size() != 1) {
+		throw ParserException(error);
+	}
+	if (parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
+		throw ParserException(error);
+	}
+	return unique_ptr_cast<SQLStatement, SelectStatement>(std::move(parser.statements[0]));
 }
 
 unique_ptr<SelectStatement> QueryRelation::GetSelectStatement() {
-	Parser parser;
-	parser.ParseQuery(query);
-	if (parser.statements.size() != 1) {
-		throw ParserException("Expected a single SELECT statement");
-	}
-	if (parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
-		throw ParserException("Expected a single SELECT statement");
-	}
-	return unique_ptr_cast<SQLStatement, SelectStatement>(move(parser.statements[0]));
+	return unique_ptr_cast<SQLStatement, SelectStatement>(select_stmt->Copy());
 }
 
 unique_ptr<QueryNode> QueryRelation::GetQueryNode() {
 	auto select = GetSelectStatement();
-	return move(select->node);
+	return std::move(select->node);
 }
 
 unique_ptr<TableRef> QueryRelation::GetTableRef() {
-	auto subquery_ref = make_unique<SubqueryRef>(GetSelectStatement(), GetAlias());
-	return move(subquery_ref);
+	auto subquery_ref = make_uniq<SubqueryRef>(GetSelectStatement(), GetAlias());
+	return std::move(subquery_ref);
 }
 
 string QueryRelation::GetAlias() {
@@ -42,7 +52,7 @@ const vector<ColumnDefinition> &QueryRelation::Columns() {
 }
 
 string QueryRelation::ToString(idx_t depth) {
-	return RenderWhitespace(depth) + "Subquery [" + query + "]";
+	return RenderWhitespace(depth) + "Subquery";
 }
 
 } // namespace duckdb

@@ -21,7 +21,7 @@ public:
 	//! Read exactly nr_bytes from the specified location in the file. Fails if nr_bytes could not be read. This is
 	//! equivalent to calling SetFilePointer(location) followed by calling Read().
 	void Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
-	//! Write exactly nr_bytes to the specified location in the file. Fails if nr_bytes could not be read. This is
+	//! Write exactly nr_bytes to the specified location in the file. Fails if nr_bytes could not be written. This is
 	//! equivalent to calling SetFilePointer(location) followed by calling Write().
 	void Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
 	//! Read nr_bytes from the specified file into the buffer, moving the file pointer forward by nr_bytes. Returns the
@@ -47,19 +47,23 @@ public:
 	//! Recursively remove a directory and all files in it
 	void RemoveDirectory(const string &directory) override;
 	//! List files in a directory, invoking the callback method for each one with (filename, is_dir)
-	bool ListFiles(const string &directory, const std::function<void(string, bool)> &callback) override;
+	bool ListFiles(const string &directory, const std::function<void(const string &, bool)> &callback,
+	               FileOpener *opener = nullptr) override;
 	//! Move a file from source path to the target, StorageManager relies on this being an atomic action for ACID
 	//! properties
 	void MoveFile(const string &source, const string &target) override;
 	//! Check if a file exists
 	bool FileExists(const string &filename) override;
+
+	//! Check if path is a pipe
+	bool IsPipe(const string &filename) override;
 	//! Remove a file from disk
 	void RemoveFile(const string &filename) override;
 	//! Sync a file handle to disk
 	void FileSync(FileHandle &handle) override;
 
 	//! Runs a glob on the file system, returning a list of matching files
-	vector<string> Glob(const string &path) override;
+	vector<string> Glob(const string &path, FileOpener *opener = nullptr) override;
 
 	bool CanHandleFile(const string &fpath) override {
 		//! Whether or not a sub-system can handle a specific file path
@@ -81,10 +85,16 @@ public:
 		return "LocalFileSystem";
 	}
 
+	//! Returns the last Win32 error, in string format. Returns an empty string if there is no error, or on non-Windows
+	//! systems.
+	static std::string GetLastErrorAsString();
+
 private:
 	//! Set the file pointer of a file handle to a specified location. Reads and writes will happen from this location
 	void SetFilePointer(FileHandle &handle, idx_t location);
 	idx_t GetFilePointer(FileHandle &handle);
+
+	vector<string> FetchFileWithoutGlob(const string &path, FileOpener *opener, bool absolute_path);
 };
 
 } // namespace duckdb

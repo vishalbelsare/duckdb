@@ -8,24 +8,47 @@
 
 #pragma once
 
+#include "duckdb/common/unordered_map.hpp"
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/parser/parsed_data/vacuum_info.hpp"
 
 namespace duckdb {
 
-//! PhysicalVacuum represents a VACUUM operation (e.g. VACUUM or ANALYZE)
+//! PhysicalVacuum represents a VACUUM operation (i.e. VACUUM or ANALYZE)
 class PhysicalVacuum : public PhysicalOperator {
 public:
-	explicit PhysicalVacuum(unique_ptr<VacuumInfo> info, idx_t estimated_cardinality)
-	    : PhysicalOperator(PhysicalOperatorType::VACUUM, {LogicalType::BOOLEAN}, estimated_cardinality),
-	      info(move(info)) {
-	}
+	static constexpr const PhysicalOperatorType TYPE = PhysicalOperatorType::VACUUM;
+
+public:
+	PhysicalVacuum(unique_ptr<VacuumInfo> info, idx_t estimated_cardinality);
 
 	unique_ptr<VacuumInfo> info;
 
 public:
-	void GetData(ExecutionContext &context, DataChunk &chunk, GlobalSourceState &gstate,
-	             LocalSourceState &lstate) const override;
+	// Source interface
+	SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, OperatorSourceInput &input) const override;
+
+	bool IsSource() const override {
+		return true;
+	}
+
+public:
+	// Sink interface
+	unique_ptr<LocalSinkState> GetLocalSinkState(ExecutionContext &context) const override;
+	unique_ptr<GlobalSinkState> GetGlobalSinkState(ClientContext &context) const override;
+
+	SinkResultType Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const override;
+	SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const override;
+	SinkFinalizeType Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
+	                          OperatorSinkFinalizeInput &input) const override;
+
+	bool IsSink() const override {
+		return info->has_table;
+	}
+
+	bool ParallelSink() const override {
+		return IsSink();
+	}
 };
 
 } // namespace duckdb

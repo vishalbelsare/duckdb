@@ -3,7 +3,9 @@
 # group: [parquet]
 
 require parquet
-require vector_size 512
+
+require skip_reload
+
 
 statement ok
 PRAGMA explain_output = PHYSICAL_ONLY

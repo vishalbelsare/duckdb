@@ -15,9 +15,15 @@ namespace duckdb {
 
 class ShowStatement : public SQLStatement {
 public:
+	static constexpr const StatementType TYPE = StatementType::SHOW_STATEMENT;
+
+public:
 	ShowStatement();
 
 	unique_ptr<ShowSelectInfo> info;
+
+protected:
+	ShowStatement(const ShowStatement &other);
 
 public:
 	unique_ptr<SQLStatement> Copy() const override;

@@ -1,39 +1,39 @@
 #include "duckdb/parser/parsed_data/sample_options.hpp"
-#include "duckdb/common/serializer.hpp"
+#include "duckdb/common/field_writer.hpp"
+#include "duckdb/common/serializer/format_serializer.hpp"
+#include "duckdb/common/serializer/format_deserializer.hpp"
 
 namespace duckdb {
 
+// **DEPRECATED**: Use EnumUtil directly instead.
 string SampleMethodToString(SampleMethod method) {
-	switch (method) {
-	case SampleMethod::SYSTEM_SAMPLE:
-		return "System";
-	case SampleMethod::BERNOULLI_SAMPLE:
-		return "Bernoulli";
-	case SampleMethod::RESERVOIR_SAMPLE:
-		return "Reservoir";
-	default:
-		return "Unknown";
-	}
+	return EnumUtil::ToString(method);
 }
 
 void SampleOptions::Serialize(Serializer &serializer) {
-	sample_size.Serialize(serializer);
-	serializer.Write<bool>(is_percentage);
-	serializer.Write<SampleMethod>(method);
-	serializer.Write<int64_t>(seed);
+	FieldWriter writer(serializer);
+	writer.WriteSerializable(sample_size);
+	writer.WriteField<bool>(is_percentage);
+	writer.WriteField<SampleMethod>(method);
+	writer.WriteField<int64_t>(seed);
+	writer.Finalize();
 }
 
 unique_ptr<SampleOptions> SampleOptions::Deserialize(Deserializer &source) {
-	auto result = make_unique<SampleOptions>();
-	result->sample_size = Value::Deserialize(source);
-	result->is_percentage = source.Read<bool>();
-	result->method = source.Read<SampleMethod>();
-	result->seed = source.Read<int64_t>();
+	auto result = make_uniq<SampleOptions>();
+
+	FieldReader reader(source);
+	result->sample_size = reader.ReadRequiredSerializable<Value, Value>();
+	result->is_percentage = reader.ReadRequired<bool>();
+	result->method = reader.ReadRequired<SampleMethod>();
+	result->seed = reader.ReadRequired<int64_t>();
+	reader.Finalize();
+
 	return result;
 }
 
 unique_ptr<SampleOptions> SampleOptions::Copy() {
-	auto result = make_unique<SampleOptions>();
+	auto result = make_uniq<SampleOptions>();
 	result->sample_size = sample_size;
 	result->is_percentage = is_percentage;
 	result->method = method;

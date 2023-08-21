@@ -8,19 +8,27 @@
 
 #pragma once
 
-#include "duckdb/planner/logical_operator.hpp"
+#include "duckdb/planner/operator/logical_unconditional_join.hpp"
 
 namespace duckdb {
 
 //! LogicalCrossProduct represents a cross product between two relations
-class LogicalCrossProduct : public LogicalOperator {
-public:
-	LogicalCrossProduct();
+class LogicalCrossProduct : public LogicalUnconditionalJoin {
+	LogicalCrossProduct() : LogicalUnconditionalJoin(LogicalOperatorType::LOGICAL_CROSS_PRODUCT) {};
 
 public:
-	vector<ColumnBinding> GetColumnBindings() override;
+	static constexpr const LogicalOperatorType TYPE = LogicalOperatorType::LOGICAL_CROSS_PRODUCT;
 
-protected:
-	void ResolveTypes() override;
+public:
+	LogicalCrossProduct(unique_ptr<LogicalOperator> left, unique_ptr<LogicalOperator> right);
+
+public:
+	static unique_ptr<LogicalOperator> Create(unique_ptr<LogicalOperator> left, unique_ptr<LogicalOperator> right);
+
+	void Serialize(FieldWriter &writer) const override;
+	static unique_ptr<LogicalOperator> Deserialize(LogicalDeserializationState &state, FieldReader &reader);
+
+	void FormatSerialize(FormatSerializer &serializer) const override;
+	static unique_ptr<LogicalOperator> FormatDeserialize(FormatDeserializer &deserializer);
 };
 } // namespace duckdb

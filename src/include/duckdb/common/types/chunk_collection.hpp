@@ -13,6 +13,8 @@
 #include "duckdb/common/winapi.hpp"
 
 namespace duckdb {
+class Allocator;
+class ClientContext;
 
 //!  A ChunkCollection represents a set of DataChunks that all have the same
 //!  types
@@ -24,11 +26,11 @@ namespace duckdb {
 */
 class ChunkCollection {
 public:
-	ChunkCollection() : count(0) {
-	}
+	explicit ChunkCollection(Allocator &allocator);
+	explicit ChunkCollection(ClientContext &context);
 
-	//! The amount of columns in the ChunkCollection
-	DUCKDB_API vector<LogicalType> &Types() {
+	//! The types of columns in the ChunkCollection
+	vector<LogicalType> &Types() {
 		return types;
 	}
 	const vector<LogicalType> &Types() const {
@@ -36,12 +38,12 @@ public:
 	}
 
 	//! The amount of rows in the ChunkCollection
-	DUCKDB_API const idx_t &Count() const {
+	const idx_t &Count() const {
 		return count;
 	}
 
 	//! The amount of columns in the ChunkCollection
-	DUCKDB_API idx_t ColumnCount() const {
+	idx_t ColumnCount() const {
 		return types.size();
 	}
 
@@ -70,19 +72,16 @@ public:
 	//! Copy a single cell to a target vector
 	DUCKDB_API void CopyCell(idx_t column, idx_t index, Vector &target, idx_t target_offset);
 
-	DUCKDB_API string ToString() const {
-		return chunks.size() == 0 ? "ChunkCollection [ 0 ]"
-		                          : "ChunkCollection [ " + std::to_string(count) + " ]: \n" + chunks[0]->ToString();
-	}
-	DUCKDB_API void Print();
+	DUCKDB_API string ToString() const;
+	DUCKDB_API void Print() const;
 
 	//! Gets a reference to the chunk at the given index
-	DUCKDB_API DataChunk &GetChunkForRow(idx_t row_index) {
+	DataChunk &GetChunkForRow(idx_t row_index) {
 		return *chunks[LocateChunk(row_index)];
 	}
 
 	//! Gets a reference to the chunk at the given index
-	DUCKDB_API DataChunk &GetChunk(idx_t chunk_index) {
+	DataChunk &GetChunk(idx_t chunk_index) {
 		D_ASSERT(chunk_index < chunks.size());
 		return *chunks[chunk_index];
 	}
@@ -91,45 +90,43 @@ public:
 		return *chunks[chunk_index];
 	}
 
-	DUCKDB_API const vector<unique_ptr<DataChunk>> &Chunks() {
+	const vector<unique_ptr<DataChunk>> &Chunks() {
 		return chunks;
 	}
 
-	DUCKDB_API idx_t ChunkCount() const {
+	idx_t ChunkCount() const {
 		return chunks.size();
 	}
 
-	DUCKDB_API void Reset() {
+	void Reset() {
 		count = 0;
 		chunks.clear();
 		types.clear();
 	}
 
-	DUCKDB_API unique_ptr<DataChunk> Fetch() {
+	unique_ptr<DataChunk> Fetch() {
 		if (ChunkCount() == 0) {
 			return nullptr;
 		}
 
-		auto res = move(chunks[0]);
+		auto res = std::move(chunks[0]);
 		chunks.erase(chunks.begin() + 0);
 		return res;
 	}
 
-	DUCKDB_API void Sort(vector<OrderType> &desc, vector<OrderByNullType> &null_order, idx_t result[]);
-	//! Reorders the rows in the collection according to the given indices.
-	DUCKDB_API void Reorder(idx_t order[]);
-
-	//! Returns true if the ChunkCollections are equivalent
-	DUCKDB_API bool Equals(ChunkCollection &other);
-
 	//! Locates the chunk that belongs to the specific index
-	DUCKDB_API idx_t LocateChunk(idx_t index) {
+	idx_t LocateChunk(idx_t index) {
 		idx_t result = index / STANDARD_VECTOR_SIZE;
 		D_ASSERT(result < chunks.size());
 		return result;
 	}
 
+	Allocator &GetAllocator() {
+		return allocator;
+	}
+
 private:
+	Allocator &allocator;
 	//! The total amount of elements in the collection
 	idx_t count;
 	//! The set of data chunks in the collection

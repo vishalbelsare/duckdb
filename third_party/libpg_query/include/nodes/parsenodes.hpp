@@ -203,6 +203,7 @@ typedef struct PGParamRef {
 	PGNodeTag type;
 	int number;   /* the number of the parameter */
 	int location; /* token location, or -1 if unknown */
+	char *name; /* optional name of the parameter */
 } PGParamRef;
 
 /*
@@ -287,6 +288,7 @@ typedef struct PGFuncCall {
 	PGList *args;             /* the arguments (list of exprs) */
 	PGList *agg_order;        /* ORDER BY (list of PGSortBy) */
 	PGNode *agg_filter;       /* FILTER clause, if any */
+	bool export_state;        /* EXPORT_STATE clause, if any */
 	bool agg_within_group;    /* ORDER BY appeared in WITHIN GROUP */
 	bool agg_star;            /* argument was really '*' */
 	bool agg_distinct;        /* arguments were labeled DISTINCT */
@@ -305,8 +307,11 @@ typedef struct PGFuncCall {
 typedef struct PGAStar {
 	PGNodeTag type;
 	char *relation;       /* relation name (optional) */
+	PGNode *expr;         /* optional: the expression (regex or list) to select columns */
 	PGList *except_list;  /* optional: EXCLUDE list */
 	PGList *replace_list; /* optional: REPLACE list */
+	bool columns;         /* whether or not this is a columns list */
+	int location;
 } PGAStar;
 
 /*
@@ -320,6 +325,7 @@ typedef struct PGAIndices {
 	bool is_slice; /* true if slice (i.e., colon present) */
 	PGNode *lidx;  /* slice lower bound, if any */
 	PGNode *uidx;  /* subscript, or slice upper bound if any */
+	PGNode *step;  /* slice step, if any */
 } PGAIndices;
 
 /*
@@ -491,6 +497,12 @@ typedef struct PGRangeFunction {
 	PGNode *sample;   /* sample options (if any) */
 } PGRangeFunction;
 
+/* Category of the column */
+typedef enum ColumnCategory {
+	COL_STANDARD,	/* regular column */
+	COL_GENERATED	/* generated (VIRTUAL|STORED) */
+}	ColumnCategory;
+
 /*
  * PGColumnDef - column definition (used in various creates)
  *
@@ -509,8 +521,9 @@ typedef struct PGRangeFunction {
  * the item and set raw_default instead.  PG_CONSTR_DEFAULT items
  * should not appear in any subsequent processing.
  */
+
 typedef struct PGColumnDef {
-	PGNodeTag type;
+	PGNodeTag type;               /* ENSURES COMPATIBILITY WITH 'PGNode' - has to be first line */
 	char *colname;                /* name of column */
 	PGTypeName *typeName;         /* type of column */
 	int inhcount;                 /* number of times column is inherited */
@@ -529,6 +542,7 @@ typedef struct PGColumnDef {
 	PGList *constraints;          /* other constraints on column */
 	PGList *fdwoptions;           /* per-column FDW options */
 	int location;                 /* parse location, or -1 if none/unknown */
+	ColumnCategory category;	  /* category of the column */
 } PGColumnDef;
 
 /*
@@ -945,7 +959,8 @@ typedef enum {
 	GROUPING_SET_SIMPLE,
 	GROUPING_SET_ROLLUP,
 	GROUPING_SET_CUBE,
-	GROUPING_SET_SETS
+	GROUPING_SET_SETS,
+	GROUPING_SET_ALL
 } GroupingSetKind;
 
 typedef struct PGGroupingSet {
@@ -1031,11 +1046,11 @@ typedef struct PGInferClause {
  */
 typedef struct PGOnConflictClause {
 	PGNodeTag type;
-	PGOnConflictAction action; /* DO NOTHING or UPDATE? */
-	PGInferClause *infer;      /* Optional index inference clause */
-	PGList *targetList;        /* the target list (of PGResTarget) */
-	PGNode *whereClause;       /* qualifications */
-	int location;              /* token location, or -1 if unknown */
+	PGOnConflictAction action;               /* DO NOTHING or UPDATE? */
+	PGInferClause *infer;                    /* Optional index inference clause */
+	PGList *targetList;                      /* the target list (of PGResTarget) */
+	PGNode *whereClause;                     /* qualifications */
+	int location;                            /* token location, or -1 if unknown */
 } PGOnConflictClause;
 
 /*
@@ -1044,10 +1059,19 @@ typedef struct PGOnConflictClause {
  *
  * We don't currently support the SEARCH or CYCLE clause.
  */
+
+typedef enum PGCTEMaterialize
+{
+	PGCTEMaterializeDefault,		/* no option specified */
+	PGCTEMaterializeAlways,		/* MATERIALIZED */
+	PGCTEMaterializeNever			/* NOT MATERIALIZED */
+} PGCTEMaterialize;
+
 typedef struct PGCommonTableExpr {
 	PGNodeTag type;
 	char *ctename;         /* query name (never qualified) */
 	PGList *aliascolnames; /* optional list of column names */
+	PGCTEMaterialize ctematerialized; /* is this an optimization fence? */
 	/* SelectStmt/InsertStmt/etc before parse analysis, PGQuery afterwards: */
 	PGNode *ctequery; /* the CTE's subquery */
 	int location;     /* token location, or -1 if unknown */
@@ -1111,13 +1135,15 @@ typedef struct PGRawStmt {
  */
 typedef struct PGInsertStmt {
 	PGNodeTag type;
-	PGRangeVar *relation;                 /* relation to insert into */
-	PGList *cols;                         /* optional: names of the target columns */
-	PGNode *selectStmt;                   /* the source SELECT/VALUES, or NULL */
-	PGOnConflictClause *onConflictClause; /* ON CONFLICT clause */
-	PGList *returningList;                /* list of expressions to return */
-	PGWithClause *withClause;             /* WITH clause */
-	PGOverridingKind override;            /* OVERRIDING clause */
+	PGRangeVar *relation;                    /* relation to insert into */
+	PGList *cols;                            /* optional: names of the target columns */
+	PGNode *selectStmt;                      /* the source SELECT/VALUES, or NULL */
+	PGOnConflictActionAlias onConflictAlias; /* the (optional) shorthand provided for the onConflictClause */
+	PGOnConflictClause *onConflictClause;    /* ON CONFLICT clause */
+	PGList *returningList;                   /* list of expressions to return */
+	PGWithClause *withClause;                /* WITH clause */
+	PGOverridingKind override;               /* OVERRIDING clause */
+	PGInsertColumnOrder insert_column_order; /* INSERT BY NAME or INSERT BY POSITION */
 } PGInsertStmt;
 
 /* ----------------------
@@ -1148,6 +1174,39 @@ typedef struct PGUpdateStmt {
 } PGUpdateStmt;
 
 /* ----------------------
+ *		Pivot Expression
+ * ----------------------
+ */
+typedef struct PGPivot {
+	PGNodeTag type;
+	PGList *pivot_columns;  /* The column names to pivot on */
+	PGList *unpivot_columns;/* The column names to unpivot */
+	PGList *pivot_value;    /* The set of pivot values */
+	PGNode *subquery;       /* Subquery to fetch valid pivot values (if any) */
+	char *pivot_enum;       /* The enum to fetch the unique values from */
+} PGPivot;
+
+typedef struct PGPivotExpr {
+	PGNodeTag type;
+	PGNode *source;      /* the source subtree */
+	PGList *aggrs;       /* The aggregations to pivot over (PIVOT only) */
+	PGList *unpivots;    /* The names to unpivot over (UNPIVOT only) */
+	PGList *pivots;      /* The set of pivot values */
+	PGList *groups;      /* The set of groups to pivot over (if any) */
+	PGAlias *alias;      /* table alias & optional column aliases */
+	bool include_nulls;  /* Whether or not to include NULL values (UNPIVOT only */
+} PGPivotExpr;
+
+typedef struct PGPivotStmt {
+	PGNodeTag type;
+	PGNode *source;      /* The source to pivot */
+	PGList *aggrs;       /* The aggregations to pivot over (PIVOT only) */
+	PGList *unpivots;    /* The names to unpivot over (UNPIVOT only) */
+	PGList *columns;     /* The set of columns to pivot over */
+	PGList *groups;      /* The set of groups to pivot over (if any) */
+} PGPivotStmt;
+
+/* ----------------------
  *		Select Statement
  *
  * A "simple" SELECT is represented in the output of gram.y by a single
@@ -1160,7 +1219,7 @@ typedef struct PGUpdateStmt {
  * whether it is a simple or compound SELECT.
  * ----------------------
  */
-typedef enum PGSetOperation { PG_SETOP_NONE = 0, PG_SETOP_UNION, PG_SETOP_INTERSECT, PG_SETOP_EXCEPT } PGSetOperation;
+typedef enum PGSetOperation { PG_SETOP_NONE = 0, PG_SETOP_UNION, PG_SETOP_INTERSECT, PG_SETOP_EXCEPT, PG_SETOP_UNION_BY_NAME } PGSetOperation;
 
 typedef struct PGSelectStmt {
 	PGNodeTag type;
@@ -1177,6 +1236,7 @@ typedef struct PGSelectStmt {
 	PGList *groupClause;      /* GROUP BY clauses */
 	PGNode *havingClause;     /* HAVING conditional-expression */
 	PGList *windowClause;     /* WINDOW window_name AS (...), ... */
+	PGNode *qualifyClause;    /* QUALIFY conditional-expression */
 
 	/*
 	 * In a "leaf" node representing a VALUES list, the above fields are all
@@ -1187,6 +1247,9 @@ typedef struct PGSelectStmt {
 	 * analysis to reject that where not valid.
 	 */
 	PGList *valuesLists; /* untransformed list of expression lists */
+
+	/* When representing a pivot statement, all values are NULL besides the pivot field */
+	PGPivotStmt *pivot;       /* PIVOT statement */
 
 	/*
 	 * These fields are used in both "leaf" SelectStmts and upper-level
@@ -1270,6 +1333,7 @@ typedef enum PGObjectType {
 	PG_OBJECT_FOREIGN_SERVER,
 	PG_OBJECT_FOREIGN_TABLE,
 	PG_OBJECT_FUNCTION,
+	PG_OBJECT_TABLE_MACRO,
 	PG_OBJECT_INDEX,
 	PG_OBJECT_LANGUAGE,
 	PG_OBJECT_LARGEOBJECT,
@@ -1310,6 +1374,7 @@ typedef enum PGObjectType {
  */
 typedef struct PGCreateSchemaStmt {
 	PGNodeTag type;
+	char *catalogname;                    /* the name of the catalog in which to create the schema */
 	char *schemaname;                     /* the name of the schema to create */
 	PGList *schemaElts;                   /* schema components (list of parsenodes) */
 	PGOnCreateConflict onconflict;        /* what to do on create conflict */
@@ -1574,7 +1639,10 @@ typedef enum PGConstrType /* types of constraints */
   PG_CONSTR_ATTR_NOT_DEFERRABLE,
   PG_CONSTR_ATTR_DEFERRED,
   PG_CONSTR_ATTR_IMMEDIATE,
-  PG_CONSTR_COMPRESSION} PGConstrType;
+  PG_CONSTR_COMPRESSION,
+  PG_CONSTR_GENERATED_VIRTUAL,
+  PG_CONSTR_GENERATED_STORED,
+  } PGConstrType;
 
 /* Foreign key action codes */
 #define PG_FKCONSTR_ACTION_NOACTION 'a'
@@ -1671,6 +1739,8 @@ typedef struct PGCreateFunctionStmt {
 	PGRangeVar *name;
 	PGList *params;
 	PGNode *function;
+  	PGNode *query;
+	PGOnCreateConflict onconflict;
 } PGCreateFunctionStmt;
 
 /* ----------------------
@@ -1795,9 +1865,14 @@ typedef struct PGViewStmt {
  *		Load Statement
  * ----------------------
  */
+
+typedef enum PGLoadInstallType { PG_LOAD_TYPE_LOAD,  PG_LOAD_TYPE_INSTALL, PG_LOAD_TYPE_FORCE_INSTALL } PGLoadInstallType;
+
+
 typedef struct PGLoadStmt {
 	PGNodeTag type;
-	char *filename; /* file to load */
+	const char *filename; /* file to load */
+	PGLoadInstallType load_type;
 } PGLoadStmt;
 
 /* ----------------------
@@ -1869,6 +1944,7 @@ typedef struct PGCreateTableAsStmt {
 typedef struct PGCheckPointStmt {
 	PGNodeTag type;
 	bool force;
+	char *name;
 } PGCheckPointStmt;
 
 /* ----------------------
@@ -1937,6 +2013,7 @@ typedef struct PGCallStmt {
 
 typedef struct PGExportStmt {
 	PGNodeTag type;
+	char *database;       /* database name */
 	char *filename;       /* filename */
 	PGList *options;      /* PGList of PGDefElem nodes */
 } PGExportStmt;
@@ -1974,19 +2051,28 @@ typedef struct PGSampleOptions {
 	PGNodeTag type;
 	PGNode *sample_size;      /* the size of the sample to take */
 	char *method;             /* sample method, or NULL for default */
-	int seed;                 /* seed, or NULL for default; */
+	bool has_seed;            /* if the sample method has seed */
+	int seed;                 /* the seed value if set; */
 	int location;             /* token location, or -1 if unknown */
 } PGSampleOptions;
 
+/* ----------------------
+ *      Limit Percentage
+ * ----------------------
+ */
+typedef struct PGLimitPercent {
+	PGNodeTag type;
+    PGNode* limit_percent;  /* limit percent */
+} PGLimitPercent;
 
 /* ----------------------
- *		Lambda Function
+ *		Lambda Function (or Arrow Operator)
  * ----------------------
  */
 typedef struct PGLambdaFunction {
 	PGNodeTag type;
-	PGList *parameters;          /* list of input parameters */
-	PGNode *function;            /* lambda expression */
+	PGNode *lhs;                 /* parameter expression */
+	PGNode *rhs;                 /* lambda expression */
 	int location;                /* token location, or -1 if unknown */
 } PGLambdaFunction;
 
@@ -2001,19 +2087,57 @@ typedef struct PGPositionalReference {
 } PGPositionalReference;
 
 /* ----------------------
- *		Enum Statement
+ *		Type Statement
  * ----------------------
  */
 
-typedef struct PGCreateEnumStmt
+typedef enum { PG_NEWTYPE_NONE, PG_NEWTYPE_ENUM, PG_NEWTYPE_ALIAS } PGNewTypeKind;
+
+typedef struct PGCreateTypeStmt
 {
 	PGNodeTag		type;
-	PGList	   *typeName;		/* qualified name (list of Value strings) */
+	PGNewTypeKind	kind;
+	PGRangeVar	   *typeName;	/* qualified name (list of Value strings) */
 	PGList	   *vals;			/* enum values (list of Value strings) */
-} PGCreateEnumStmt;
+	PGTypeName *ofType;			/* original type of alias name */
+    PGNode *query;
+} PGCreateTypeStmt;
 
+/* ----------------------
+ *		Attach Statement
+ * ----------------------
+ */
 
+typedef struct PGAttachStmt
+{
+	PGNodeTag		type;
+	char *path;			/* The file path of the to-be-attached database */
+	char *name;			/* The name of the attached database */
+	PGList *options;      /* PGList of PGDefElem nodes */
+    PGNode *query;
+} PGAttachStmt;
 
+/* ----------------------
+ *		Dettach Statement
+ * ----------------------
+ */
+
+typedef struct PGDetachStmt
+{
+	PGNodeTag		type;
+	char *db_name;         /* list of names of attached databases */
+	bool missing_ok;
+} PGDetachStmt;
+
+/* ----------------------
+ *		Use Statement
+ * ----------------------
+ */
+
+typedef struct PGUseStmt {
+	PGNodeTag type;
+	PGRangeVar *name;    /* variable to be set */
+} PGUseStmt;
 
 
 }

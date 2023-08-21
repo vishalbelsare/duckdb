@@ -3,6 +3,9 @@
 # group: [any_all]
 
 statement ok
+SET default_null_order='nulls_first';
+
+statement ok
 PRAGMA enable_verification
 
 statement ok
@@ -49,7 +52,7 @@ SELECT i FROM integers WHERE i > ALL(SELECT MIN(i) FROM integers)
 3
 
 query I
-SELECT i FROM integers WHERE i < ALL(SELECT MAX(i) FROM integers)
+SELECT i FROM integers WHERE i < ALL(SELECT MAX(i) FROM integers) ORDER BY 1
 ----
 1
 2

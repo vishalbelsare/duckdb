@@ -5,6 +5,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/assert.hpp"
+#include "duckdb/common/operator/multiply.hpp"
 #include "duckdb/common/limits.hpp"
 
 #include <cstring>
@@ -14,6 +15,10 @@
 namespace duckdb {
 
 static_assert(sizeof(date_t) == sizeof(int32_t), "date_t was padded");
+
+const char *Date::PINF = "infinity";  // NOLINT
+const char *Date::NINF = "-infinity"; // NOLINT
+const char *Date::EPOCH = "epoch";    // NOLINT
 
 const string_t Date::MONTH_NAMES_ABBREVIATED[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
@@ -185,7 +190,23 @@ bool Date::ParseDoubleDigit(const char *buf, idx_t len, idx_t &pos, int32_t &res
 	return false;
 }
 
-bool Date::TryConvertDate(const char *buf, idx_t len, idx_t &pos, date_t &result, bool strict) {
+static bool TryConvertDateSpecial(const char *buf, idx_t len, idx_t &pos, const char *special) {
+	auto p = pos;
+	for (; p < len && *special; ++p) {
+		const auto s = *special++;
+		if (!s || StringUtil::CharacterToLower(buf[p]) != s) {
+			return false;
+		}
+	}
+	if (*special) {
+		return false;
+	}
+	pos = p;
+	return true;
+}
+
+bool Date::TryConvertDate(const char *buf, idx_t len, idx_t &pos, date_t &result, bool &special, bool strict) {
+	special = false;
 	pos = 0;
 	if (len == 0) {
 		return false;
@@ -213,7 +234,20 @@ bool Date::TryConvertDate(const char *buf, idx_t len, idx_t &pos, date_t &result
 		}
 	}
 	if (!StringUtil::CharacterIsDigit(buf[pos])) {
-		return false;
+		// Check for special values
+		if (TryConvertDateSpecial(buf, len, pos, PINF)) {
+			result = yearneg ? date_t::ninfinity() : date_t::infinity();
+		} else if (TryConvertDateSpecial(buf, len, pos, EPOCH)) {
+			result = date_t::epoch();
+		} else {
+			return false;
+		}
+		// skip trailing spaces - parsing must be strict here
+		while (pos < len && StringUtil::CharacterIsSpace(buf[pos])) {
+			pos++;
+		}
+		special = true;
+		return pos == len;
 	}
 	// first parse the year
 	for (; pos < len && StringUtil::CharacterIsDigit(buf[pos]); pos++) {
@@ -303,7 +337,8 @@ string Date::ConversionError(string_t str) {
 date_t Date::FromCString(const char *buf, idx_t len, bool strict) {
 	date_t result;
 	idx_t pos;
-	if (!TryConvertDate(buf, len, pos, result, strict)) {
+	bool special = false;
+	if (!TryConvertDate(buf, len, pos, result, special, strict)) {
 		throw ConversionException(ConversionError(string(buf, len)));
 	}
 	return result;
@@ -314,13 +349,20 @@ date_t Date::FromString(const string &str, bool strict) {
 }
 
 string Date::ToString(date_t date) {
+	// PG displays temporal infinities in lowercase,
+	// but numerics in Titlecase.
+	if (date == date_t::infinity()) {
+		return PINF;
+	} else if (date == date_t::ninfinity()) {
+		return NINF;
+	}
 	int32_t date_units[3];
 	idx_t year_length;
 	bool add_bc;
 	Date::Convert(date, date_units[0], date_units[1], date_units[2]);
 
 	auto length = DateToStringCast::Length(date_units, year_length, add_bc);
-	auto buffer = unique_ptr<char[]>(new char[length]);
+	auto buffer = make_unsafe_uniq_array<char>(length);
 	DateToStringCast::Format(buffer.get(), date_units, year_length, add_bc);
 	return string(buffer.get(), length);
 }
@@ -383,7 +425,29 @@ int64_t Date::Epoch(date_t date) {
 }
 
 int64_t Date::EpochNanoseconds(date_t date) {
-	return ((int64_t)date.days) * (Interval::MICROS_PER_DAY * 1000);
+	int64_t result;
+	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(date.days, Interval::MICROS_PER_DAY * 1000,
+	                                                               result)) {
+		throw ConversionException("Could not convert DATE (%s) to nanoseconds", Date::ToString(date));
+	}
+	return result;
+}
+
+int64_t Date::EpochMicroseconds(date_t date) {
+	int64_t result;
+	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(date.days, Interval::MICROS_PER_DAY, result)) {
+		throw ConversionException("Could not convert DATE (%s) to microseconds", Date::ToString(date));
+	}
+	return result;
+}
+
+int64_t Date::EpochMilliseconds(date_t date) {
+	int64_t result;
+	const auto MILLIS_PER_DAY = Interval::MICROS_PER_DAY / Interval::MICROS_PER_MSEC;
+	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(date.days, MILLIS_PER_DAY, result)) {
+		throw ConversionException("Could not convert DATE (%s) to milliseconds", Date::ToString(date));
+	}
+	return result;
 }
 
 int32_t Date::ExtractYear(date_t d, int32_t *last_year) {
@@ -445,36 +509,70 @@ int32_t Date::ExtractISODayOfTheWeek(date_t date) {
 	// 7  = 4
 	if (date.days < 0) {
 		// negative date: start off at 4 and cycle downwards
-		return (7 - ((-date.days + 3) % 7));
+		return (7 - ((-int64_t(date.days) + 3) % 7));
 	} else {
 		// positive date: start off at 4 and cycle upwards
-		return ((date.days + 3) % 7) + 1;
+		return ((int64_t(date.days) + 3) % 7) + 1;
 	}
 }
 
-static int32_t GetISOWeek(int32_t year, int32_t month, int32_t day) {
-	auto day_of_the_year =
-	    (Date::IsLeapYear(year) ? Date::CUMULATIVE_LEAP_DAYS[month] : Date::CUMULATIVE_DAYS[month]) + day;
-	// get the first day of the first week of the year
-	// the first week is the week that has the 4th of January in it
-	auto day_of_the_fourth = Date::ExtractISODayOfTheWeek(Date::FromDate(year, 1, 4));
-	// if fourth is monday, then fourth is the first day
-	// if fourth is tuesday, third is the first day
-	// if fourth is wednesday, second is the first day
-	// if fourth is thursday - sunday, first is the first day
-	auto first_day_of_the_first_week = day_of_the_fourth >= 4 ? 0 : 5 - day_of_the_fourth;
-	if (day_of_the_year < first_day_of_the_first_week) {
-		// day is part of last year
-		return GetISOWeek(year - 1, 12, day);
-	} else {
-		return ((day_of_the_year - first_day_of_the_first_week) / 7) + 1;
+template <typename T>
+static T PythonDivMod(const T &x, const T &y, T &r) {
+	// D_ASSERT(y > 0);
+	T quo = x / y;
+	r = x - quo * y;
+	if (r < 0) {
+		--quo;
+		r += y;
 	}
+	// D_ASSERT(0 <= r && r < y);
+	return quo;
+}
+
+static date_t GetISOWeekOne(int32_t year) {
+	const auto first_day = Date::FromDate(year, 1, 1); /* ord of 1/1 */
+	/* 0 if 1/1 is a Monday, 1 if a Tue, etc. */
+	const auto first_weekday = Date::ExtractISODayOfTheWeek(first_day) - 1;
+	/* ordinal of closest Monday at or before 1/1 */
+	auto week1_monday = first_day - first_weekday;
+
+	if (first_weekday > 3) { /* if 1/1 was Fri, Sat, Sun */
+		week1_monday += 7;
+	}
+
+	return week1_monday;
+}
+
+static int32_t GetISOYearWeek(const date_t date, int32_t &year) {
+	int32_t month, day;
+	Date::Convert(date, year, month, day);
+	auto week1_monday = GetISOWeekOne(year);
+	auto week = PythonDivMod((date.days - week1_monday.days), 7, day);
+	if (week < 0) {
+		week1_monday = GetISOWeekOne(--year);
+		week = PythonDivMod((date.days - week1_monday.days), 7, day);
+	} else if (week >= 52 && date >= GetISOWeekOne(year + 1)) {
+		++year;
+		week = 0;
+	}
+
+	return week + 1;
+}
+
+void Date::ExtractISOYearWeek(date_t date, int32_t &year, int32_t &week) {
+	week = GetISOYearWeek(date, year);
 }
 
 int32_t Date::ExtractISOWeekNumber(date_t date) {
-	int32_t year, month, day;
-	Date::Convert(date, year, month, day);
-	return GetISOWeek(year, month - 1, day - 1);
+	int32_t year, week;
+	ExtractISOYearWeek(date, year, week);
+	return week;
+}
+
+int32_t Date::ExtractISOYearNumber(date_t date) {
+	int32_t year, week;
+	ExtractISOYearWeek(date, year, week);
+	return year;
 }
 
 int32_t Date::ExtractWeekNumberRegular(date_t date, bool monday_first) {

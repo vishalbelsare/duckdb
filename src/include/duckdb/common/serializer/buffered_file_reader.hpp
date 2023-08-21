@@ -14,10 +14,11 @@ namespace duckdb {
 
 class BufferedFileReader : public Deserializer {
 public:
-	BufferedFileReader(FileSystem &fs, const char *path, FileOpener *opener = nullptr);
+	BufferedFileReader(FileSystem &fs, const char *path, optional_ptr<ClientContext> context,
+	                   FileLockType lock_type = FileLockType::READ_LOCK, optional_ptr<FileOpener> opener = nullptr);
 
 	FileSystem &fs;
-	unique_ptr<data_t[]> data;
+	unsafe_unique_array<data_t> data;
 	idx_t offset;
 	idx_t read_data;
 	unique_ptr<FileHandle> handle;
@@ -31,9 +32,15 @@ public:
 		return file_size;
 	}
 
+	void Seek(uint64_t location);
+	uint64_t CurrentOffset();
+
+	ClientContext &GetContext() override;
+
 private:
 	idx_t file_size;
 	idx_t total_read;
+	optional_ptr<ClientContext> context;
 };
 
 } // namespace duckdb

@@ -1,26 +1,28 @@
 #include "odbc_interval.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
+#include "odbc_diagnostic.hpp"
 #include <sqltypes.h>
 #include <sqlext.h>
 
 using duckdb::interval_t;
 using duckdb::OdbcInterval;
+using duckdb::SQLStateType;
 using duckdb::Value;
 
-bool OdbcInterval::GetInterval(Value &value, interval_t &interval, duckdb::OdbcHandleStmt *stmt) {
+bool OdbcInterval::GetInterval(Value &value, interval_t &interval, duckdb::OdbcHandleStmt *hstmt) {
 	switch (value.type().id()) {
 	case LogicalTypeId::INTERVAL:
-		// interval = value.GetValue<interval_t>(); // we don't have a get to retrieve interval
-		interval = value.value_.interval;
+		interval = IntervalValue::Get(value);
 		return true;
 	case LogicalTypeId::VARCHAR: {
 		string error_message;
-		string val_str = value.GetValue<string>();
+		auto &val_str = StringValue::Get(value);
 		if (!TryCastErrorMessage::Operation<string_t, interval_t>(string_t(val_str), interval, &error_message)) {
-			if (error_message.empty()) {
-				error_message = CastExceptionText<string_t, interval_t>(string_t(val_str));
-			}
-			stmt->error_messages.emplace_back(error_message);
+			error_message = CastExceptionText<string_t, interval_t>(string_t(val_str));
+			auto data_source = hstmt->dbc->GetDataSourceName();
+			duckdb::DiagRecord diag_rec(error_message, SQLStateType::INVALID_DATATIME_FORMAT, data_source);
+			hstmt->odbc_diagnostic->FormatDiagnosticMessage(diag_rec, data_source, "OdbcInterval::GetInterval");
+			hstmt->odbc_diagnostic->AddDiagRecord(diag_rec);
 			return false;
 		}
 		return true;

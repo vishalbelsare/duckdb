@@ -127,7 +127,7 @@ static PGNode *makeIntervalNode(char *str, int location, PGList *typmods);
 static PGNode *makeIntervalNode(int val, int location, PGList *typmods);
 static PGNode *makeIntervalNode(PGNode *arg, int location, PGList *typmods);
 static PGNode *makeSampleSize(PGValue *sample_size, bool is_percentage);
-static PGNode *makeSampleOptions(PGNode *sample_size, char *method, int seed, int location);
+static PGNode *makeSampleOptions(PGNode *sample_size, char *method, int *seed, int location);
 static PGNode *makeIntConst(int val, int location);
 static PGNode *makeFloatConst(char *str, int location);
 static PGNode *makeBitStringConst(char *str, int location);
@@ -135,6 +135,7 @@ static PGNode *makeNullAConst(int location);
 static PGNode *makeAConst(PGValue *v, int location);
 static PGNode *makeBoolAConst(bool state, int location);
 static PGNode *makeParamRef(int number, int location);
+static PGNode *makeNamedParamRef(char* name, int location);
 static void check_qualified_name(PGList *names, core_yyscan_t yyscanner);
 static PGList *check_func_name(PGList *names, core_yyscan_t yyscanner);
 static PGList *check_indirection(PGList *indirection, core_yyscan_t yyscanner);
@@ -149,8 +150,6 @@ static void doNegateFloat(PGValue *v);
 static PGNode *makeAndExpr(PGNode *lexpr, PGNode *rexpr, int location);
 static PGNode *makeOrExpr(PGNode *lexpr, PGNode *rexpr, int location);
 static PGNode *makeNotExpr(PGNode *expr, int location);
-static PGNode *makeSQLValueFunction(PGSQLValueFunctionOp op, int32_t typmod,
-								  int location);
 static void SplitColQualList(PGList *qualList,
 							 PGList **constraintList, PGCollateClause **collClause,
 							 core_yyscan_t yyscanner);
@@ -158,3 +157,4 @@ static void processCASbits(int cas_bits, int location, const char *constrType,
 			   bool *deferrable, bool *initdeferred, bool *not_valid,
 			   bool *no_inherit, core_yyscan_t yyscanner);
 static PGNode *makeRecursiveViewSelect(char *relname, PGList *aliases, PGNode *query);
+static PGNode *makeLimitPercent(PGNode *limit_percent);

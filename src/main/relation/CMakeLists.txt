@@ -4,6 +4,7 @@ add_library_unity(
   aggregate_relation.cpp
   create_table_relation.cpp
   create_view_relation.cpp
+  cross_product_relation.cpp
   delete_relation.cpp
   distinct_relation.cpp
   explain_relation.cpp
@@ -16,12 +17,14 @@ add_library_unity(
   projection_relation.cpp
   query_relation.cpp
   read_csv_relation.cpp
+  read_json_relation.cpp
   setop_relation.cpp
   subquery_relation.cpp
   table_function_relation.cpp
   table_relation.cpp
   value_relation.cpp
   view_relation.cpp
+  write_parquet_relation.cpp
   write_csv_relation.cpp)
 set(ALL_OBJECT_FILES
     ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:duckdb_main_relation>

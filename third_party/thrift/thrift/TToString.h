@@ -17,8 +17,8 @@
  * under the License.
  */
 
-#ifndef _THRIFT_TOSTRING_H_
-#define _THRIFT_TOSTRING_H_ 1
+#ifndef _DUCKDB_THRIFT_TOSTRING_H_
+#define _DUCKDB_THRIFT_TOSTRING_H_ 1
 
 #include <cmath>
 #include <limits>
@@ -26,7 +26,7 @@
 #include <set>
 #include <sstream>
 #include <string>
-#include <vector>
+#include "duckdb/common/vector.hpp"
 
 namespace duckdb_apache {
 namespace thrift {
@@ -68,7 +68,7 @@ template <typename T>
 std::string to_string(const std::set<T>& s);
 
 template <typename T>
-std::string to_string(const std::vector<T>& t);
+std::string to_string(const duckdb::vector<T>& t);
 
 template <typename K, typename V>
 std::string to_string(const typename std::pair<K, V>& v) {
@@ -89,7 +89,7 @@ std::string to_string(const T& beg, const T& end) {
 }
 
 template <typename T>
-std::string to_string(const std::vector<T>& t) {
+std::string to_string(const duckdb::vector<T>& t) {
   std::ostringstream o;
   o << "[" << to_string(t.begin(), t.end()) << "]";
   return o.str();
@@ -111,4 +111,4 @@ std::string to_string(const std::set<T>& s) {
 }
 } // duckdb_apache::thrift
 
-#endif // _THRIFT_TOSTRING_H_
+#endif // _DUCKDB_THRIFT_TOSTRING_H_

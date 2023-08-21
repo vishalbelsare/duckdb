@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/types.hpp"
+#include "duckdb/common/type_util.hpp"
 #include "duckdb/common/exception.hpp"
 
 namespace duckdb {
@@ -28,6 +29,10 @@ template <>
 date_t AddOperator::Operation(date_t left, int32_t right);
 template <>
 date_t AddOperator::Operation(int32_t left, date_t right);
+template <>
+timestamp_t AddOperator::Operation(date_t left, dtime_t right);
+template <>
+timestamp_t AddOperator::Operation(dtime_t left, date_t right);
 template <>
 interval_t AddOperator::Operation(interval_t left, interval_t right);
 template <>
@@ -62,7 +67,7 @@ bool TryAddOperator::Operation(int16_t left, int16_t right, int16_t &result);
 template <>
 bool TryAddOperator::Operation(int32_t left, int32_t right, int32_t &result);
 template <>
-bool TryAddOperator::Operation(int64_t left, int64_t right, int64_t &result);
+DUCKDB_API bool TryAddOperator::Operation(int64_t left, int64_t right, int64_t &result);
 
 struct AddOperatorOverflowCheck {
 	template <class TA, class TB, class TR>

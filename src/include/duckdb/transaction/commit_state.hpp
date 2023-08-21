@@ -15,6 +15,7 @@ namespace duckdb {
 class CatalogEntry;
 class DataChunk;
 class WriteAheadLog;
+class ClientContext;
 
 struct DataTableInfo;
 struct DeleteInfo;
@@ -22,17 +23,20 @@ struct UpdateInfo;
 
 class CommitState {
 public:
-	explicit CommitState(transaction_t commit_id, WriteAheadLog *log = nullptr);
+	explicit CommitState(ClientContext &context, transaction_t commit_id, optional_ptr<WriteAheadLog> log = nullptr);
 
-	WriteAheadLog *log;
+	optional_ptr<WriteAheadLog> log;
 	transaction_t commit_id;
 	UndoFlags current_op;
 
-	DataTableInfo *current_table_info;
+	optional_ptr<DataTableInfo> current_table_info;
 	idx_t row_identifiers[STANDARD_VECTOR_SIZE];
 
 	unique_ptr<DataChunk> delete_chunk;
 	unique_ptr<DataChunk> update_chunk;
+
+private:
+	ClientContext &context;
 
 public:
 	template <bool HAS_LOG>
@@ -42,9 +46,9 @@ public:
 private:
 	void SwitchTable(DataTableInfo *table, UndoFlags new_op);
 
-	void WriteCatalogEntry(CatalogEntry *entry, data_ptr_t extra_data);
-	void WriteDelete(DeleteInfo *info);
-	void WriteUpdate(UpdateInfo *info);
+	void WriteCatalogEntry(CatalogEntry &entry, data_ptr_t extra_data);
+	void WriteDelete(DeleteInfo &info);
+	void WriteUpdate(UpdateInfo &info);
 
 	void AppendRowId(row_t rowid);
 };

@@ -20,12 +20,12 @@ struct InitialNestedLoopJoin {
 	                       SelectionVector &lvector, SelectionVector &rvector, idx_t current_match_count) {
 		// initialize phase of nested loop join
 		// fill lvector and rvector with matches from the base vectors
-		VectorData left_data, right_data;
-		left.Orrify(left_size, left_data);
-		right.Orrify(right_size, right_data);
+		UnifiedVectorFormat left_data, right_data;
+		left.ToUnifiedFormat(left_size, left_data);
+		right.ToUnifiedFormat(right_size, right_data);
 
-		auto ldata = (T *)left_data.data;
-		auto rdata = (T *)right_data.data;
+		auto ldata = UnifiedVectorFormat::GetData<T>(left_data);
+		auto rdata = UnifiedVectorFormat::GetData<T>(right_data);
 		idx_t result_count = 0;
 		for (; rpos < right_size; rpos++) {
 			idx_t right_position = right_data.sel->get_index(rpos);
@@ -54,16 +54,16 @@ struct RefineNestedLoopJoin {
 	template <class T, class OP>
 	static idx_t Operation(Vector &left, Vector &right, idx_t left_size, idx_t right_size, idx_t &lpos, idx_t &rpos,
 	                       SelectionVector &lvector, SelectionVector &rvector, idx_t current_match_count) {
-		VectorData left_data, right_data;
-		left.Orrify(left_size, left_data);
-		right.Orrify(right_size, right_data);
+		UnifiedVectorFormat left_data, right_data;
+		left.ToUnifiedFormat(left_size, left_data);
+		right.ToUnifiedFormat(right_size, right_data);
 
 		// refine phase of the nested loop join
 		// refine lvector and rvector based on matches of subsequent conditions (in case there are multiple conditions
 		// in the join)
 		D_ASSERT(current_match_count > 0);
-		auto ldata = (T *)left_data.data;
-		auto rdata = (T *)right_data.data;
+		auto ldata = UnifiedVectorFormat::GetData<T>(left_data);
+		auto rdata = UnifiedVectorFormat::GetData<T>(right_data);
 		idx_t result_count = 0;
 		for (idx_t i = 0; i < current_match_count; i++) {
 			auto lidx = lvector.get_index(i);

@@ -17,8 +17,8 @@
  * under the License.
  */
 
-#ifndef _THRIFT_THRIFT_H_
-#define _THRIFT_THRIFT_H_ 1
+#ifndef _DUCKDB_THRIFT_THRIFT_H_
+#define _DUCKDB_THRIFT_THRIFT_H_ 1
 
 #include "thrift/transport/PlatformSocket.h"
 
@@ -41,6 +41,7 @@
 #include <vector>
 #include <exception>
 #include <typeinfo>
+#include <cstddef>
 
 #include "thrift/TLogging.h"
 //#include <thrift/TOutput.h>
@@ -50,9 +51,14 @@
 namespace duckdb_apache {
 namespace thrift {
 
-class TEnumIterator
-    : public std::iterator<std::forward_iterator_tag, std::pair<int, const char*> > {
+class TEnumIterator {
 public:
+  using value_type = std::pair<int, const char*>;
+  using difference_type = std::ptrdiff_t;
+  using pointer = value_type*;
+  using reference = value_type&;
+  using iterator_category = std::forward_iterator_tag;
+
   TEnumIterator(int n, int* enums, const char** names)
     : ii_(0), n_(n), enums_(enums), names_(names) {}
 
@@ -130,4 +136,4 @@ void profile_write_pprof(FILE* gen_calls_f, FILE* virtual_calls_f);
 }
 } // duckdb_apache::thrift
 
-#endif // #ifndef _THRIFT_THRIFT_H_
+#endif // #ifndef _DUCKDB_THRIFT_THRIFT_H_

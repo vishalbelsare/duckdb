@@ -1,34 +1,23 @@
 #include "parquet_writer.hpp"
-#include "parquet_timestamp.hpp"
 
 #include "duckdb.hpp"
+#include "parquet_timestamp.hpp"
 #ifndef DUCKDB_AMALGAMATION
+#include "duckdb/common/file_system.hpp"
+#include "duckdb/common/serializer/buffered_file_writer.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/function/table_function.hpp"
-#include "duckdb/parser/parsed_data/create_table_function_info.hpp"
-#include "duckdb/parser/parsed_data/create_copy_function_info.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
-#include "duckdb/common/file_system.hpp"
-#include "duckdb/common/string_util.hpp"
-#include "duckdb/common/types/date.hpp"
-#include "duckdb/common/types/hugeint.hpp"
-#include "duckdb/common/types/time.hpp"
-#include "duckdb/common/types/timestamp.hpp"
-#include "duckdb/common/serializer/buffered_file_writer.hpp"
-#include "duckdb/common/serializer/buffered_serializer.hpp"
+#include "duckdb/parser/parsed_data/create_copy_function_info.hpp"
+#include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #endif
-
-#include "snappy.h"
-#include "miniz_wrapper.hpp"
-#include "zstd.h"
 
 namespace duckdb {
 
-using namespace duckdb_parquet;                   // NOLINT
 using namespace duckdb_apache::thrift;            // NOLINT
 using namespace duckdb_apache::thrift::protocol;  // NOLINT
 using namespace duckdb_apache::thrift::transport; // NOLINT
-using namespace duckdb_miniz;                     // NOLINT
 
 using duckdb_parquet::format::CompressionCodec;
 using duckdb_parquet::format::ConvertedType;
@@ -39,6 +28,30 @@ using duckdb_parquet::format::PageHeader;
 using duckdb_parquet::format::PageType;
 using ParquetRowGroup = duckdb_parquet::format::RowGroup;
 using duckdb_parquet::format::Type;
+
+ChildFieldIDs::ChildFieldIDs() {
+	ids = make_uniq<case_insensitive_map_t<FieldID>>();
+}
+
+ChildFieldIDs ChildFieldIDs::Copy() const {
+	ChildFieldIDs result;
+	for (const auto &id : *ids) {
+		result.ids->emplace(id.first, id.second.Copy());
+	}
+	return result;
+}
+
+FieldID::FieldID() : set(false) {
+}
+
+FieldID::FieldID(int32_t field_id_p) : set(true), field_id(field_id_p) {
+}
+
+FieldID FieldID::Copy() const {
+	auto result = set ? FieldID(field_id) : FieldID();
+	result.child_field_ids = child_field_ids.Copy();
+	return result;
+}
 
 class MyTransport : public TTransport {
 public:
@@ -56,14 +69,14 @@ public:
 	}
 
 	void write_virt(const uint8_t *buf, uint32_t len) override {
-		serializer.WriteData((const_data_ptr_t)buf, len);
+		serializer.WriteData(const_data_ptr_cast(buf), len);
 	}
 
 private:
 	Serializer &serializer;
 };
 
-static Type::type DuckDBTypeToParquetType(const LogicalType &duckdb_type) {
+Type::type ParquetWriter::DuckDBTypeToParquetType(const LogicalType &duckdb_type) {
 	switch (duckdb_type.id()) {
 	case LogicalTypeId::BOOLEAN:
 		return Type::BOOLEAN;
@@ -76,14 +89,18 @@ static Type::type DuckDBTypeToParquetType(const LogicalType &duckdb_type) {
 		return Type::INT64;
 	case LogicalTypeId::FLOAT:
 		return Type::FLOAT;
-	case LogicalTypeId::DECIMAL: // for now...
 	case LogicalTypeId::DOUBLE:
 	case LogicalTypeId::HUGEINT:
 		return Type::DOUBLE;
-	case LogicalTypeId::VARCHAR:
+	case LogicalTypeId::ENUM:
 	case LogicalTypeId::BLOB:
+	case LogicalTypeId::VARCHAR:
+	case LogicalTypeId::BIT:
 		return Type::BYTE_ARRAY;
+	case LogicalTypeId::TIME:
+	case LogicalTypeId::TIME_TZ:
 	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_TZ:
 	case LogicalTypeId::TIMESTAMP_MS:
 	case LogicalTypeId::TIMESTAMP_NS:
 	case LogicalTypeId::TIMESTAMP_SEC:
@@ -94,130 +111,153 @@ static Type::type DuckDBTypeToParquetType(const LogicalType &duckdb_type) {
 		return Type::INT32;
 	case LogicalTypeId::UBIGINT:
 		return Type::INT64;
+	case LogicalTypeId::INTERVAL:
+	case LogicalTypeId::UUID:
+		return Type::FIXED_LEN_BYTE_ARRAY;
+	case LogicalTypeId::DECIMAL:
+		switch (duckdb_type.InternalType()) {
+		case PhysicalType::INT16:
+		case PhysicalType::INT32:
+			return Type::INT32;
+		case PhysicalType::INT64:
+			return Type::INT64;
+		case PhysicalType::INT128:
+			return Type::FIXED_LEN_BYTE_ARRAY;
+		default:
+			throw InternalException("Unsupported internal decimal type");
+		}
 	default:
-		throw NotImplementedException(duckdb_type.ToString());
+		throw NotImplementedException("Unimplemented type for Parquet \"%s\"", duckdb_type.ToString());
 	}
 }
 
-static bool DuckDBTypeToConvertedType(const LogicalType &duckdb_type, ConvertedType::type &result) {
+void ParquetWriter::SetSchemaProperties(const LogicalType &duckdb_type,
+                                        duckdb_parquet::format::SchemaElement &schema_ele) {
 	switch (duckdb_type.id()) {
 	case LogicalTypeId::TINYINT:
-		result = ConvertedType::INT_8;
-		return true;
+		schema_ele.converted_type = ConvertedType::INT_8;
+		schema_ele.__isset.converted_type = true;
+		break;
 	case LogicalTypeId::SMALLINT:
-		result = ConvertedType::INT_16;
-		return true;
+		schema_ele.converted_type = ConvertedType::INT_16;
+		schema_ele.__isset.converted_type = true;
+		break;
 	case LogicalTypeId::INTEGER:
-		result = ConvertedType::INT_32;
-		return true;
+		schema_ele.converted_type = ConvertedType::INT_32;
+		schema_ele.__isset.converted_type = true;
+		break;
 	case LogicalTypeId::BIGINT:
-		result = ConvertedType::INT_64;
-		return true;
+		schema_ele.converted_type = ConvertedType::INT_64;
+		schema_ele.__isset.converted_type = true;
+		break;
 	case LogicalTypeId::UTINYINT:
-		result = ConvertedType::UINT_8;
-		return true;
+		schema_ele.converted_type = ConvertedType::UINT_8;
+		schema_ele.__isset.converted_type = true;
+		break;
 	case LogicalTypeId::USMALLINT:
-		result = ConvertedType::UINT_16;
-		return true;
+		schema_ele.converted_type = ConvertedType::UINT_16;
+		schema_ele.__isset.converted_type = true;
+		break;
 	case LogicalTypeId::UINTEGER:
-		result = ConvertedType::UINT_32;
-		return true;
+		schema_ele.converted_type = ConvertedType::UINT_32;
+		schema_ele.__isset.converted_type = true;
+		break;
 	case LogicalTypeId::UBIGINT:
-		result = ConvertedType::UINT_64;
-		return true;
+		schema_ele.converted_type = ConvertedType::UINT_64;
+		schema_ele.__isset.converted_type = true;
+		break;
 	case LogicalTypeId::DATE:
-		result = ConvertedType::DATE;
-		return true;
-	case LogicalTypeId::VARCHAR:
-		result = ConvertedType::UTF8;
-		return true;
+		schema_ele.converted_type = ConvertedType::DATE;
+		schema_ele.__isset.converted_type = true;
+		break;
+	case LogicalTypeId::TIME_TZ:
+	case LogicalTypeId::TIME:
+		schema_ele.converted_type = ConvertedType::TIME_MICROS;
+		schema_ele.__isset.converted_type = true;
+		schema_ele.__isset.logicalType = true;
+		schema_ele.logicalType.__isset.TIME = true;
+		schema_ele.logicalType.TIME.isAdjustedToUTC = (duckdb_type.id() == LogicalTypeId::TIME_TZ);
+		schema_ele.logicalType.TIME.unit.__isset.MICROS = true;
+		break;
+	case LogicalTypeId::TIMESTAMP_TZ:
 	case LogicalTypeId::TIMESTAMP:
 	case LogicalTypeId::TIMESTAMP_NS:
 	case LogicalTypeId::TIMESTAMP_SEC:
-		result = ConvertedType::TIMESTAMP_MICROS;
-		return true;
+		schema_ele.converted_type = ConvertedType::TIMESTAMP_MICROS;
+		schema_ele.__isset.converted_type = true;
+		schema_ele.__isset.logicalType = true;
+		schema_ele.logicalType.__isset.TIMESTAMP = true;
+		schema_ele.logicalType.TIMESTAMP.isAdjustedToUTC = (duckdb_type.id() == LogicalTypeId::TIMESTAMP_TZ);
+		schema_ele.logicalType.TIMESTAMP.unit.__isset.MICROS = true;
+		break;
 	case LogicalTypeId::TIMESTAMP_MS:
-		result = ConvertedType::TIMESTAMP_MILLIS;
-		return true;
+		schema_ele.converted_type = ConvertedType::TIMESTAMP_MILLIS;
+		schema_ele.__isset.converted_type = true;
+		schema_ele.__isset.logicalType = true;
+		schema_ele.logicalType.__isset.TIMESTAMP = true;
+		schema_ele.logicalType.TIMESTAMP.isAdjustedToUTC = false;
+		schema_ele.logicalType.TIMESTAMP.unit.__isset.MILLIS = true;
+		break;
+	case LogicalTypeId::ENUM:
+	case LogicalTypeId::VARCHAR:
+		schema_ele.converted_type = ConvertedType::UTF8;
+		schema_ele.__isset.converted_type = true;
+		break;
+	case LogicalTypeId::INTERVAL:
+		schema_ele.type_length = 12;
+		schema_ele.converted_type = ConvertedType::INTERVAL;
+		schema_ele.__isset.type_length = true;
+		schema_ele.__isset.converted_type = true;
+		break;
+	case LogicalTypeId::UUID:
+		schema_ele.type_length = 16;
+		schema_ele.__isset.type_length = true;
+		schema_ele.__isset.logicalType = true;
+		schema_ele.logicalType.__isset.UUID = true;
+		break;
+	case LogicalTypeId::DECIMAL:
+		schema_ele.converted_type = ConvertedType::DECIMAL;
+		schema_ele.precision = DecimalType::GetWidth(duckdb_type);
+		schema_ele.scale = DecimalType::GetScale(duckdb_type);
+		schema_ele.__isset.converted_type = true;
+		schema_ele.__isset.precision = true;
+		schema_ele.__isset.scale = true;
+		if (duckdb_type.InternalType() == PhysicalType::INT128) {
+			schema_ele.type_length = 16;
+			schema_ele.__isset.type_length = true;
+		}
+		schema_ele.__isset.logicalType = true;
+		schema_ele.logicalType.__isset.DECIMAL = true;
+		schema_ele.logicalType.DECIMAL.precision = schema_ele.precision;
+		schema_ele.logicalType.DECIMAL.scale = schema_ele.scale;
+		break;
 	default:
-		return false;
+		break;
 	}
 }
 
-static void VarintEncode(uint32_t val, Serializer &ser) {
-	do {
-		uint8_t byte = val & 127;
-		val >>= 7;
-		if (val != 0) {
-			byte |= 128;
-		}
-		ser.Write<uint8_t>(byte);
-	} while (val != 0);
-}
-
-static uint8_t GetVarintSize(uint32_t val) {
-	uint8_t res = 0;
-	do {
-		uint8_t byte = val & 127;
-		val >>= 7;
-		if (val != 0) {
-			byte |= 128;
-		}
-		res++;
-	} while (val != 0);
-	return res;
-}
-
-struct ParquetCastOperator {
-	template <class SRC, class TGT>
-	static TGT Operation(SRC input) {
-		return TGT(input);
+void VerifyUniqueNames(const vector<string> &names) {
+#ifdef DEBUG
+	unordered_set<string> name_set;
+	name_set.reserve(names.size());
+	for (auto &column : names) {
+		auto res = name_set.insert(column);
+		D_ASSERT(res.second == true);
 	}
-};
-
-struct ParquetTimestampNSOperator {
-	template <class SRC, class TGT>
-	static TGT Operation(SRC input) {
-		return Timestamp::FromEpochNanoSeconds(input).value;
-	}
-};
-
-struct ParquetTimestampSOperator {
-	template <class SRC, class TGT>
-	static TGT Operation(SRC input) {
-		return Timestamp::FromEpochSeconds(input).value;
-	}
-};
-
-struct ParquetHugeintOperator {
-	template <class SRC, class TGT>
-	static TGT Operation(SRC input) {
-		return Hugeint::Cast<double>(input);
-	}
-};
-
-template <class SRC, class TGT, class OP = ParquetCastOperator>
-static void TemplatedWritePlain(Vector &col, idx_t length, ValidityMask &mask, Serializer &ser) {
-	auto *ptr = FlatVector::GetData<SRC>(col);
-	for (idx_t r = 0; r < length; r++) {
-		if (mask.RowIsValid(r)) {
-			ser.Write<TGT>(OP::template Operation<SRC, TGT>(ptr[r]));
-		}
-	}
-}
-
-ParquetWriter::ParquetWriter(FileSystem &fs, string file_name_p, FileOpener *file_opener_p, vector<LogicalType> types_p,
-                             vector<string> names_p, CompressionCodec::type codec)
-    : file_name(move(file_name_p)), sql_types(move(types_p)), column_names(move(names_p)), codec(codec) {
-#if STANDARD_VECTOR_SIZE < 64
-	throw NotImplementedException("Parquet writer is not supported for vector sizes < 64");
+	// If there would be duplicates, these sizes would differ
+	D_ASSERT(name_set.size() == names.size());
 #endif
+}
 
+ParquetWriter::ParquetWriter(FileSystem &fs, string file_name_p, vector<LogicalType> types_p, vector<string> names_p,
+                             CompressionCodec::type codec, ChildFieldIDs field_ids_p)
+    : file_name(std::move(file_name_p)), sql_types(std::move(types_p)), column_names(std::move(names_p)), codec(codec),
+      field_ids(std::move(field_ids_p)) {
 	// initialize the file writer
-	writer = make_unique<BufferedFileWriter>(
-	    fs, file_name.c_str(), FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW, file_opener_p);
+	writer = make_uniq<BufferedFileWriter>(fs, file_name.c_str(),
+	                                       FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
 	// parquet files start with the string "PAR1"
-	writer->WriteData((const_data_ptr_t) "PAR1", 4);
+	writer->WriteData(const_data_ptr_cast("PAR1"), 4);
 	TCompactProtocolFactoryT<MyTransport> tproto_factory;
 	protocol = tproto_factory.getProtocol(make_shared<MyTransport>(*writer));
 
@@ -227,248 +267,121 @@ ParquetWriter::ParquetWriter(FileSystem &fs, string file_name_p, FileOpener *fil
 	file_meta_data.__isset.created_by = true;
 	file_meta_data.created_by = "DuckDB";
 
-	file_meta_data.schema.resize(sql_types.size() + 1);
+	file_meta_data.schema.resize(1);
 
 	// populate root schema object
 	file_meta_data.schema[0].name = "duckdb_schema";
 	file_meta_data.schema[0].num_children = sql_types.size();
 	file_meta_data.schema[0].__isset.num_children = true;
+	file_meta_data.schema[0].repetition_type = duckdb_parquet::format::FieldRepetitionType::REQUIRED;
+	file_meta_data.schema[0].__isset.repetition_type = true;
 
+	auto &unique_names = column_names;
+	VerifyUniqueNames(unique_names);
+
+	vector<string> schema_path;
 	for (idx_t i = 0; i < sql_types.size(); i++) {
-		auto &schema_element = file_meta_data.schema[i + 1];
-
-		schema_element.type = DuckDBTypeToParquetType(sql_types[i]);
-		schema_element.repetition_type = FieldRepetitionType::OPTIONAL;
-		schema_element.num_children = 0;
-		schema_element.__isset.num_children = true;
-		schema_element.__isset.type = true;
-		schema_element.__isset.repetition_type = true;
-		schema_element.name = column_names[i];
-		schema_element.__isset.converted_type = DuckDBTypeToConvertedType(sql_types[i], schema_element.converted_type);
+		column_writers.push_back(ColumnWriter::CreateWriterRecursive(file_meta_data.schema, *this, sql_types[i],
+		                                                             unique_names[i], schema_path, &field_ids));
 	}
 }
 
-void ParquetWriter::Flush(ChunkCollection &buffer) {
-	if (buffer.Count() == 0) {
-		return;
-	}
-	lock_guard<mutex> glock(lock);
+void ParquetWriter::PrepareRowGroup(ColumnDataCollection &buffer, PreparedRowGroup &result) {
+	// We write 8 columns at a time so that iterating over ColumnDataCollection is more efficient
+	static constexpr idx_t COLUMNS_PER_PASS = 8;
+
+	// We want these to be in-memory/hybrid so we don't have to copy over strings to the dictionary
+	D_ASSERT(buffer.GetAllocatorType() == ColumnDataAllocatorType::IN_MEMORY_ALLOCATOR ||
+	         buffer.GetAllocatorType() == ColumnDataAllocatorType::HYBRID);
 
 	// set up a new row group for this chunk collection
-	ParquetRowGroup row_group;
-	row_group.num_rows = 0;
-	row_group.file_offset = writer->GetTotalWritten();
+	auto &row_group = result.row_group;
+	row_group.num_rows = buffer.Count();
+	row_group.total_byte_size = buffer.SizeInBytes();
 	row_group.__isset.file_offset = true;
-	row_group.columns.resize(buffer.ColumnCount());
 
+	auto &states = result.states;
 	// iterate over each of the columns of the chunk collection and write them
-	for (idx_t i = 0; i < buffer.ColumnCount(); i++) {
-		// we start off by writing everything into a temporary buffer
-		// this is necessary to (1) know the total written size, and (2) to compress it afterwards
-		BufferedSerializer temp_writer;
-
-		// set up some metadata
-		PageHeader hdr;
-		hdr.compressed_page_size = 0;
-		hdr.uncompressed_page_size = 0;
-		hdr.type = PageType::DATA_PAGE;
-		hdr.__isset.data_page_header = true;
-
-		hdr.data_page_header.num_values = buffer.Count();
-		hdr.data_page_header.encoding = Encoding::PLAIN;
-		hdr.data_page_header.definition_level_encoding = Encoding::RLE;
-		hdr.data_page_header.repetition_level_encoding = Encoding::BIT_PACKED;
-
-		// record the current offset of the writer into the file
-		// this is the starting position of the current page
-		auto start_offset = writer->GetTotalWritten();
-
-		// write the definition levels (i.e. the inverse of the nullmask)
-		// we always bit pack everything
-
-		// first figure out how many bytes we need (1 byte per 8 rows, rounded up)
-		auto define_byte_count = (buffer.Count() + 7) / 8;
-		// we need to set up the count as a varint, plus an added marker for the RLE scheme
-		// for this marker we shift the count left 1 and set low bit to 1 to indicate bit packed literals
-		uint32_t define_header = (define_byte_count << 1) | 1;
-		uint32_t define_size = GetVarintSize(define_header) + define_byte_count;
-
-		// we write the actual definitions into the temp_writer for now
-		temp_writer.Write<uint32_t>(define_size);
-		VarintEncode(define_header, temp_writer);
-
-		for (auto &chunk : buffer.Chunks()) {
-			auto &validity = FlatVector::Validity(chunk->data[i]);
-			auto validity_data = validity.GetData();
-			auto chunk_define_byte_count = (chunk->size() + 7) / 8;
-			if (!validity_data) {
-				ValidityMask nop_mask(chunk->size());
-				temp_writer.WriteData((const_data_ptr_t)nop_mask.GetData(), chunk_define_byte_count);
-			} else {
-				// write the bits of the nullmask
-				temp_writer.WriteData((const_data_ptr_t)validity_data, chunk_define_byte_count);
-			}
+	D_ASSERT(buffer.ColumnCount() == column_writers.size());
+	for (idx_t col_idx = 0; col_idx < buffer.ColumnCount(); col_idx += COLUMNS_PER_PASS) {
+		const auto next = MinValue<idx_t>(buffer.ColumnCount() - col_idx, COLUMNS_PER_PASS);
+		vector<column_t> column_ids;
+		vector<reference<ColumnWriter>> col_writers;
+		vector<unique_ptr<ColumnWriterState>> write_states;
+		for (idx_t i = 0; i < next; i++) {
+			column_ids.emplace_back(col_idx + i);
+			col_writers.emplace_back(*column_writers[column_ids.back()]);
+			write_states.emplace_back(col_writers.back().get().InitializeWriteState(row_group));
 		}
 
-		// now write the actual payload: we write this as PLAIN values (for now? possibly for ever?)
-		for (auto &chunk : buffer.Chunks()) {
-			auto &input = *chunk;
-			auto &input_column = input.data[i];
-			auto &mask = FlatVector::Validity(input_column);
-
-			// write actual payload data
-			switch (sql_types[i].id()) {
-			case LogicalTypeId::BOOLEAN: {
-				auto *ptr = FlatVector::GetData<bool>(input_column);
-				uint8_t byte = 0;
-				uint8_t byte_pos = 0;
-				for (idx_t r = 0; r < input.size(); r++) {
-					if (mask.RowIsValid(r)) { // only encode if non-null
-						byte |= (ptr[r] & 1) << byte_pos;
-						byte_pos++;
-
-						if (byte_pos == 8) {
-							temp_writer.Write<uint8_t>(byte);
-							byte = 0;
-							byte_pos = 0;
-						}
-					}
+		for (auto &chunk : buffer.Chunks({column_ids})) {
+			for (idx_t i = 0; i < next; i++) {
+				if (col_writers[i].get().HasAnalyze()) {
+					col_writers[i].get().Analyze(*write_states[i], nullptr, chunk.data[i], chunk.size());
 				}
-				// flush last byte if req
-				if (byte_pos > 0) {
-					temp_writer.Write<uint8_t>(byte);
-				}
-				break;
-			}
-			case LogicalTypeId::TINYINT:
-				TemplatedWritePlain<int8_t, int32_t>(input_column, input.size(), mask, temp_writer);
-				break;
-			case LogicalTypeId::SMALLINT:
-				TemplatedWritePlain<int16_t, int32_t>(input_column, input.size(), mask, temp_writer);
-				break;
-			case LogicalTypeId::INTEGER:
-			case LogicalTypeId::DATE:
-				TemplatedWritePlain<int32_t, int32_t>(input_column, input.size(), mask, temp_writer);
-				break;
-			case LogicalTypeId::BIGINT:
-			case LogicalTypeId::TIMESTAMP:
-			case LogicalTypeId::TIMESTAMP_MS:
-				TemplatedWritePlain<int64_t, int64_t>(input_column, input.size(), mask, temp_writer);
-				break;
-			case LogicalTypeId::HUGEINT:
-				TemplatedWritePlain<hugeint_t, double, ParquetHugeintOperator>(input_column, input.size(), mask,
-				                                                               temp_writer);
-				break;
-			case LogicalTypeId::TIMESTAMP_NS:
-				TemplatedWritePlain<int64_t, int64_t, ParquetTimestampNSOperator>(input_column, input.size(), mask,
-				                                                                  temp_writer);
-				break;
-			case LogicalTypeId::TIMESTAMP_SEC:
-				TemplatedWritePlain<int64_t, int64_t, ParquetTimestampSOperator>(input_column, input.size(), mask,
-				                                                                 temp_writer);
-				break;
-			case LogicalTypeId::UTINYINT:
-				TemplatedWritePlain<uint8_t, int32_t>(input_column, input.size(), mask, temp_writer);
-				break;
-			case LogicalTypeId::USMALLINT:
-				TemplatedWritePlain<uint16_t, int32_t>(input_column, input.size(), mask, temp_writer);
-				break;
-			case LogicalTypeId::UINTEGER:
-				TemplatedWritePlain<uint32_t, uint32_t>(input_column, input.size(), mask, temp_writer);
-				break;
-			case LogicalTypeId::UBIGINT:
-				TemplatedWritePlain<uint64_t, uint64_t>(input_column, input.size(), mask, temp_writer);
-				break;
-			case LogicalTypeId::FLOAT:
-				TemplatedWritePlain<float, float>(input_column, input.size(), mask, temp_writer);
-				break;
-			case LogicalTypeId::DECIMAL: {
-				// FIXME: fixed length byte array...
-				Vector double_vec(LogicalType::DOUBLE);
-				VectorOperations::Cast(input_column, double_vec, input.size());
-				TemplatedWritePlain<double, double>(double_vec, input.size(), mask, temp_writer);
-				break;
-			}
-			case LogicalTypeId::DOUBLE:
-				TemplatedWritePlain<double, double>(input_column, input.size(), mask, temp_writer);
-				break;
-			case LogicalTypeId::BLOB:
-			case LogicalTypeId::VARCHAR: {
-				auto *ptr = FlatVector::GetData<string_t>(input_column);
-				for (idx_t r = 0; r < input.size(); r++) {
-					if (mask.RowIsValid(r)) {
-						temp_writer.Write<uint32_t>(ptr[r].GetSize());
-						temp_writer.WriteData((const_data_ptr_t)ptr[r].GetDataUnsafe(), ptr[r].GetSize());
-					}
-				}
-				break;
-			}
-			default:
-				throw NotImplementedException((sql_types[i].ToString()));
 			}
 		}
 
-		// now that we have finished writing the data we know the uncompressed size
-		hdr.uncompressed_page_size = temp_writer.blob.size;
-
-		// compress the data based
-		size_t compressed_size;
-		data_ptr_t compressed_data;
-		unique_ptr<data_t[]> compressed_buf;
-		switch (codec) {
-		case CompressionCodec::UNCOMPRESSED:
-			compressed_size = temp_writer.blob.size;
-			compressed_data = temp_writer.blob.data.get();
-			break;
-		case CompressionCodec::SNAPPY: {
-			compressed_size = snappy::MaxCompressedLength(temp_writer.blob.size);
-			compressed_buf = unique_ptr<data_t[]>(new data_t[compressed_size]);
-			snappy::RawCompress((const char *)temp_writer.blob.data.get(), temp_writer.blob.size,
-			                    (char *)compressed_buf.get(), &compressed_size);
-			compressed_data = compressed_buf.get();
-			break;
-		}
-		case CompressionCodec::GZIP: {
-			MiniZStream s;
-			compressed_size = s.MaxCompressedLength(temp_writer.blob.size);
-			compressed_buf = unique_ptr<data_t[]>(new data_t[compressed_size]);
-			s.Compress((const char *)temp_writer.blob.data.get(), temp_writer.blob.size, (char *)compressed_buf.get(),
-			           &compressed_size);
-			compressed_data = compressed_buf.get();
-			break;
-		}
-		case CompressionCodec::ZSTD: {
-			compressed_size = duckdb_zstd::ZSTD_compressBound(temp_writer.blob.size);
-			compressed_buf = unique_ptr<data_t[]>(new data_t[compressed_size]);
-			compressed_size = duckdb_zstd::ZSTD_compress((void *)compressed_buf.get(), compressed_size,
-			                                             (const void *)temp_writer.blob.data.get(),
-			                                             temp_writer.blob.size, ZSTD_CLEVEL_DEFAULT);
-			compressed_data = compressed_buf.get();
-			break;
-		}
-		default:
-			throw InternalException("Unsupported codec for Parquet Writer");
+		for (idx_t i = 0; i < next; i++) {
+			if (col_writers[i].get().HasAnalyze()) {
+				col_writers[i].get().FinalizeAnalyze(*write_states[i]);
+			}
 		}
 
-		hdr.compressed_page_size = compressed_size;
-		// now finally write the data to the actual file
-		hdr.write(protocol.get());
-		writer->WriteData(compressed_data, compressed_size);
+		for (auto &chunk : buffer.Chunks({column_ids})) {
+			for (idx_t i = 0; i < next; i++) {
+				col_writers[i].get().Prepare(*write_states[i], nullptr, chunk.data[i], chunk.size());
+			}
+		}
 
-		auto &column_chunk = row_group.columns[i];
-		column_chunk.__isset.meta_data = true;
-		column_chunk.meta_data.data_page_offset = start_offset;
-		column_chunk.meta_data.total_compressed_size = writer->GetTotalWritten() - start_offset;
-		column_chunk.meta_data.codec = codec;
-		column_chunk.meta_data.path_in_schema.push_back(file_meta_data.schema[i + 1].name);
-		column_chunk.meta_data.num_values = buffer.Count();
-		column_chunk.meta_data.type = file_meta_data.schema[i + 1].type;
+		for (idx_t i = 0; i < next; i++) {
+			col_writers[i].get().BeginWrite(*write_states[i]);
+		}
+
+		for (auto &chunk : buffer.Chunks({column_ids})) {
+			for (idx_t i = 0; i < next; i++) {
+				col_writers[i].get().Write(*write_states[i], chunk.data[i], chunk.size());
+			}
+		}
+
+		for (auto &write_state : write_states) {
+			states.push_back(std::move(write_state));
+		}
 	}
-	row_group.num_rows += buffer.Count();
+	result.heaps = buffer.GetHeapReferences();
+}
+
+void ParquetWriter::FlushRowGroup(PreparedRowGroup &prepared) {
+	lock_guard<mutex> glock(lock);
+	auto &row_group = prepared.row_group;
+	auto &states = prepared.states;
+	if (states.empty()) {
+		throw InternalException("Attempting to flush a row group with no rows");
+	}
+	row_group.file_offset = writer->GetTotalWritten();
+	for (idx_t col_idx = 0; col_idx < states.size(); col_idx++) {
+		const auto &col_writer = column_writers[col_idx];
+		auto write_state = std::move(states[col_idx]);
+		col_writer->FinalizeWrite(*write_state);
+	}
 
 	// append the row group to the file meta data
 	file_meta_data.row_groups.push_back(row_group);
-	file_meta_data.num_rows += buffer.Count();
+	file_meta_data.num_rows += row_group.num_rows;
+
+	prepared.heaps.clear();
+}
+
+void ParquetWriter::Flush(ColumnDataCollection &buffer) {
+	if (buffer.Count() == 0) {
+		return;
+	}
+
+	PreparedRowGroup prepared_row_group;
+	PrepareRowGroup(buffer, prepared_row_group);
+	buffer.Reset();
+
+	FlushRowGroup(prepared_row_group);
 }
 
 void ParquetWriter::Finalize() {
@@ -478,7 +391,7 @@ void ParquetWriter::Finalize() {
 	writer->Write<uint32_t>(writer->GetTotalWritten() - start_offset);
 
 	// parquet files also end with the string "PAR1"
-	writer->WriteData((const_data_ptr_t) "PAR1", 4);
+	writer->WriteData(const_data_ptr_cast("PAR1"), 4);
 
 	// flush to disk
 	writer->Sync();

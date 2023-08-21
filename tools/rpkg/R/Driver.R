@@ -7,7 +7,7 @@ check_flag <- function(x) {
 }
 
 extptr_str <- function(e, n = 5) {
-  x <- .Call(duckdb_ptr_to_str, e)
+  x <- rapi_ptr_to_str(e)
   substr(x, nchar(x) - n + 1, nchar(x))
 }
 
@@ -15,117 +15,8 @@ drv_to_string <- function(drv) {
   if (!is(drv, "duckdb_driver")) {
     stop("pass a duckdb_driver object")
   }
-  sprintf("<duckdb_driver %s dbdir='%s' read_only=%s>", extptr_str(drv@database_ref), drv@dbdir, drv@read_only)
+  sprintf("<duckdb_driver %s dbdir='%s' read_only=%s bigint=%s>", extptr_str(drv@database_ref), drv@dbdir, drv@read_only, drv@bigint)
 }
-
-#' @rdname duckdb_driver-class
-#' @inheritParams methods::show
-#' @export
-setMethod(
-  "show", "duckdb_driver",
-  function(object) {
-    message(drv_to_string(object))
-    invisible(NULL)
-  }
-)
-
-#' Connect to a DuckDB database instance
-#'
-#' `dbConnect()` connects to a database instance.
-#'
-#' @param drv Object returned by `duckdb()`
-#' @param dbdir Location for database files. Should be a path to an existing
-#'   directory in the file system. With the default, all
-#'   data is kept in RAM
-#' @param ... Ignored
-#' @param debug Print additional debug information such as queries
-#' @param read_only Set to `TRUE` for read-only operation
-#' @param timezone_out The time zone returned to R, defaults to `"UTC"`, which
-#'   is currently the only timezone supported by duckdb.
-#'   If you want to display datetime values in the local timezone,
-#'   set to [Sys.timezone()] or `""`.
-#' @param tz_out_convert How to convert timestamp columns to the timezone specified
-#'   in `timezone_out`. There are two options: `"with"`, and `"force"`. If `"with"`
-#'   is chosen, the timestamp will be returned as it would appear in the specified time zone.
-#'   If `"force"` is chosen, the timestamp will have the same clock
-#'   time as the timestamp in the database, but with the new time zone.
-#' @param config Named list with DuckDB configuration flags
-#'
-#' @return `dbConnect()` returns an object of class
-#'   \linkS4class{duckdb_connection}.
-#'
-#' @rdname duckdb
-#' @export
-#' @examples
-#' drv <- duckdb()
-#' con <- dbConnect(drv)
-#'
-#' dbGetQuery(con, "SELECT 'Hello, world!'")
-#'
-#' dbDisconnect(con)
-#' duckdb_shutdown(drv)
-#'
-#' # Shorter:
-#' con <- dbConnect(duckdb())
-#' dbGetQuery(con, "SELECT 'Hello, world!'")
-#' dbDisconnect(con, shutdown = TRUE)
-setMethod(
-  "dbConnect", "duckdb_driver",
-  function(drv, dbdir = DBDIR_MEMORY, ...,
-           debug = getOption("duckdb.debug", FALSE),
-           read_only = FALSE,
-           timezone_out = "UTC",
-           tz_out_convert = c("with", "force"), config = list()) {
-
-    check_flag(debug)
-    timezone_out <- check_tz(timezone_out)
-    tz_out_convert <- match.arg(tz_out_convert)
-
-    missing_dbdir <- missing(dbdir)
-    dbdir <- path.expand(as.character(dbdir))
-
-    # aha, a late comer. let's make a new instance.
-    if (!missing_dbdir && dbdir != drv@dbdir) {
-      duckdb_shutdown(drv)
-      drv <- duckdb(dbdir, read_only, config)
-    }
-
-    conn <- duckdb_connection(drv, debug = debug)
-    on.exit(dbDisconnect(conn))
-
-    conn@timezone_out <- timezone_out
-    conn@tz_out_convert <- tz_out_convert
-
-    on.exit(NULL)
-
-    rs_on_connection_opened(conn)
-
-    conn
-  }
-)
-
-#' @description
-#' `dbDisconnect()` closes a DuckDB database connection, optionally shutting down
-#' the associated instance.
-#'
-#' @param conn A `duckdb_connection` object
-#' @param shutdown Set to `TRUE` to shut down the DuckDB database instance that this connection refers to.
-#' @rdname duckdb
-#' @export
-setMethod(
-  "dbDisconnect", "duckdb_connection",
-  function(conn, ..., shutdown = FALSE) {
-    if (!dbIsValid(conn)) {
-      warning("Connection already closed.", call. = FALSE)
-    }
-    .Call(duckdb_disconnect_R, conn@conn_ref)
-    if (shutdown) {
-      duckdb_shutdown(conn@driver)
-    }
-    rs_on_connection_closed(conn)
-    invisible(TRUE)
-  }
-)
 
 #' @description
 #' `duckdb()` creates or reuses a database instance.
@@ -134,83 +25,34 @@ setMethod(
 #'
 #' @import methods DBI
 #' @export
-duckdb <- function(dbdir = DBDIR_MEMORY, read_only = FALSE, config=list()) {
+duckdb <- function(dbdir = DBDIR_MEMORY, read_only = FALSE, bigint = "numeric", config = list()) {
   check_flag(read_only)
+
+  switch(bigint,
+    numeric = {
+      # fine
+    },
+    integer64 = {
+      if (!is_installed("bit64")) {
+        stop("bit64 package is required for integer64 support")
+      }
+    },
+    stop(paste("Unsupported bigint configuration", bigint))
+  )
+
+  # R packages are not allowed to write extensions into home directory, so use R_user_dir instead
+  if (!("extension_directory" %in% names(config))) {
+    config["extension_directory"] <- tools::R_user_dir("duckdb", "data")
+  }
+
   new(
     "duckdb_driver",
-    database_ref = .Call(duckdb_startup_R, dbdir, read_only, config),
+    database_ref = rapi_startup(dbdir, read_only, config),
     dbdir = dbdir,
-    read_only = read_only
+    read_only = read_only,
+    bigint = bigint
   )
 }
-
-#' @rdname duckdb_driver-class
-#' @export
-setMethod(
-  "dbDataType", "duckdb_driver",
-  function(dbObj, obj, ...) {
-
-    if (is.null(obj)) stop("NULL parameter")
-    if (is.data.frame(obj)) {
-      return(vapply(obj, function(x) dbDataType(dbObj, x), FUN.VALUE = "character"))
-    }
-    #  else if (int64 && inherits(obj, "integer64")) "BIGINT"
-    else if (inherits(obj, "Date")) {
-      "DATE"
-    } else if (inherits(obj, "difftime")) {
-      "TIME"
-    } else if (is.logical(obj)) {
-      "BOOLEAN"
-    } else if (is.integer(obj)) {
-      "INTEGER"
-    } else if (is.numeric(obj)) {
-      "DOUBLE"
-    } else if (inherits(obj, "POSIXt")) {
-      "TIMESTAMP"
-    } else if (is.list(obj) && all(vapply(obj, typeof, FUN.VALUE = "character") == "raw" || is.na(obj))) {
-      "BLOB"
-    } else {
-      "STRING"
-    }
-
-  }
-)
-
-#' @rdname duckdb_driver-class
-#' @inheritParams DBI::dbIsValid
-#' @importFrom DBI dbConnect
-#' @export
-setMethod(
-  "dbIsValid", "duckdb_driver",
-  function(dbObj, ...) {
-    valid <- FALSE
-    tryCatch(
-      {
-        con <- dbConnect(dbObj)
-        dbExecute(con, SQL("SELECT 1"))
-        dbDisconnect(con)
-        valid <- TRUE
-      },
-      error = function(c) {
-      }
-    )
-    valid
-  }
-)
-
-#' @rdname duckdb_driver-class
-#' @inheritParams DBI::dbGetInfo
-#' @export
-setMethod(
-  "dbGetInfo", "duckdb_driver",
-  function(dbObj, ...) {
-    con <- dbConnect(dbObj)
-    version <- dbGetQuery(con, "select library_version from pragma_version()")[[1]][[1]]
-    dbDisconnect(con)
-    list(driver.version = version, client.version = version, dbname=dbObj@dbdir)
-  }
-)
-
 
 #' @description
 #' `duckdb_shutdown()` shuts down a database instance.
@@ -227,8 +69,50 @@ duckdb_shutdown <- function(drv) {
     warning("invalid driver object, already closed?")
     invisible(FALSE)
   }
-  .Call(duckdb_shutdown_R, drv@database_ref)
+  rapi_shutdown(drv@database_ref)
   invisible(TRUE)
+}
+
+#' @description
+#' Return an [adbcdrivermanager::adbc_driver()] for use with Arrow Database
+#' Connectivity via the adbcdrivermanager package.
+#'
+#' @return An object of class "adbc_driver"
+#' @rdname duckdb
+#' @export
+#' @examplesIf requireNamespace("adbcdrivermanager", quietly = TRUE)
+#' library(adbcdrivermanager)
+#' with_adbc(db <- adbc_database_init(duckdb_adbc()), {
+#'   as.data.frame(read_adbc(db, "SELECT 1 as one;"))
+#' })
+duckdb_adbc <- function() {
+  init_func <- structure(rapi_adbc_init_func(), class = "adbc_driver_init_func")
+  adbcdrivermanager::adbc_driver(init_func, subclass = "duckdb_driver_adbc")
+}
+
+# Registered in zzz.R
+adbc_database_init.duckdb_driver_adbc <- function(driver, ...) {
+  adbcdrivermanager::adbc_database_init_default(
+    driver,
+    list(...),
+    subclass = "duckdb_database_adbc"
+  )
+}
+
+adbc_connection_init.duckdb_database_adbc <- function(database, ...) {
+  adbcdrivermanager::adbc_connection_init_default(
+    database,
+    list(...),
+    subclass = "duckdb_connection_adbc"
+  )
+}
+
+adbc_statement_init.duckdb_connection_adbc <- function(connection, ...) {
+  adbcdrivermanager::adbc_statement_init_default(
+    connection,
+    list(...),
+    subclass = "duckdb_statement_adbc"
+  )
 }
 
 is_installed <- function(pkg) {
@@ -236,7 +120,6 @@ is_installed <- function(pkg) {
 }
 
 check_tz <- function(timezone) {
-
   if (!is.null(timezone) && timezone == "") {
     return(Sys.timezone())
   }

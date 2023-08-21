@@ -2,6 +2,7 @@
 
 #include "duckdb/common/checksum.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/file_opener.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/windows.hpp"
@@ -11,15 +12,18 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <sys/stat.h>
 
 #ifndef _WIN32
 #include <dirent.h>
 #include <fcntl.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #else
+#include "duckdb/common/windows_util.hpp"
+
+#include <io.h>
 #include <string>
 
 #ifdef __MINGW32__
@@ -48,6 +52,62 @@ static void AssertValidFileFlags(uint8_t flags) {
 }
 
 #ifndef _WIN32
+bool LocalFileSystem::FileExists(const string &filename) {
+	if (!filename.empty()) {
+		if (access(filename.c_str(), 0) == 0) {
+			struct stat status;
+			stat(filename.c_str(), &status);
+			if (S_ISREG(status.st_mode)) {
+				return true;
+			}
+		}
+	}
+	// if any condition fails
+	return false;
+}
+
+bool LocalFileSystem::IsPipe(const string &filename) {
+	if (!filename.empty()) {
+		if (access(filename.c_str(), 0) == 0) {
+			struct stat status;
+			stat(filename.c_str(), &status);
+			if (S_ISFIFO(status.st_mode)) {
+				return true;
+			}
+		}
+	}
+	// if any condition fails
+	return false;
+}
+
+#else
+bool LocalFileSystem::FileExists(const string &filename) {
+	auto unicode_path = WindowsUtil::UTF8ToUnicode(filename.c_str());
+	const wchar_t *wpath = unicode_path.c_str();
+	if (_waccess(wpath, 0) == 0) {
+		struct _stati64 status;
+		_wstati64(wpath, &status);
+		if (status.st_mode & S_IFREG) {
+			return true;
+		}
+	}
+	return false;
+}
+bool LocalFileSystem::IsPipe(const string &filename) {
+	auto unicode_path = WindowsUtil::UTF8ToUnicode(filename.c_str());
+	const wchar_t *wpath = unicode_path.c_str();
+	if (_waccess(wpath, 0) == 0) {
+		struct _stati64 status;
+		_wstati64(wpath, &status);
+		if (status.st_mode & _S_IFCHR) {
+			return true;
+		}
+	}
+	return false;
+}
+#endif
+
+#ifndef _WIN32
 // somehow sometimes this is missing
 #ifndef O_CLOEXEC
 #define O_CLOEXEC 0
@@ -60,21 +120,21 @@ static void AssertValidFileFlags(uint8_t flags) {
 
 struct UnixFileHandle : public FileHandle {
 public:
-	UnixFileHandle(FileSystem &file_system, string path, int fd) : FileHandle(file_system, move(path)), fd(fd) {
+	UnixFileHandle(FileSystem &file_system, string path, int fd) : FileHandle(file_system, std::move(path)), fd(fd) {
 	}
 	~UnixFileHandle() override {
-		Close();
+		UnixFileHandle::Close();
 	}
 
-protected:
+	int fd;
+
+public:
 	void Close() override {
 		if (fd != -1) {
 			close(fd);
+			fd = -1;
 		}
 	};
-
-public:
-	int fd;
 };
 
 static FileType GetFileTypeInternal(int fd) { // LCOV_EXCL_START
@@ -102,8 +162,9 @@ static FileType GetFileTypeInternal(int fd) { // LCOV_EXCL_START
 	}
 } // LCOV_EXCL_STOP
 
-unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path, uint8_t flags, FileLockType lock_type,
+unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path_p, uint8_t flags, FileLockType lock_type,
                                                  FileCompressionType compression, FileOpener *opener) {
+	auto path = FileSystem::ExpandPath(path_p, opener);
 	if (compression != FileCompressionType::UNCOMPRESSED) {
 		throw NotImplementedException("Unsupported compression type for default file system");
 	}
@@ -177,11 +238,11 @@ unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path, uint8_t fla
 			}
 		}
 	}
-	return make_unique<UnixFileHandle>(*this, path, fd);
+	return make_uniq<UnixFileHandle>(*this, path, fd);
 }
 
 void LocalFileSystem::SetFilePointer(FileHandle &handle, idx_t location) {
-	int fd = ((UnixFileHandle &)handle).fd;
+	int fd = handle.Cast<UnixFileHandle>().fd;
 	off_t offset = lseek(fd, location, SEEK_SET);
 	if (offset == (off_t)-1) {
 		throw IOException("Could not seek to location %lld for file \"%s\": %s", location, handle.path,
@@ -190,7 +251,7 @@ void LocalFileSystem::SetFilePointer(FileHandle &handle, idx_t location) {
 }
 
 idx_t LocalFileSystem::GetFilePointer(FileHandle &handle) {
-	int fd = ((UnixFileHandle &)handle).fd;
+	int fd = handle.Cast<UnixFileHandle>().fd;
 	off_t position = lseek(fd, 0, SEEK_CUR);
 	if (position == (off_t)-1) {
 		throw IOException("Could not get file position file \"%s\": %s", handle.path, strerror(errno));
@@ -199,19 +260,25 @@ idx_t LocalFileSystem::GetFilePointer(FileHandle &handle) {
 }
 
 void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
-	int fd = ((UnixFileHandle &)handle).fd;
-	int64_t bytes_read = pread(fd, buffer, nr_bytes, location);
-	if (bytes_read == -1) {
-		throw IOException("Could not read from file \"%s\": %s", handle.path, strerror(errno));
-	}
-	if (bytes_read != nr_bytes) {
-		throw IOException("Could not read all bytes from file \"%s\": wanted=%lld read=%lld", handle.path, nr_bytes,
-		                  bytes_read);
+	int fd = handle.Cast<UnixFileHandle>().fd;
+	auto read_buffer = char_ptr_cast(buffer);
+	while (nr_bytes > 0) {
+		int64_t bytes_read = pread(fd, read_buffer, nr_bytes, location);
+		if (bytes_read == -1) {
+			throw IOException("Could not read from file \"%s\": %s", handle.path, strerror(errno));
+		}
+		if (bytes_read == 0) {
+			throw IOException(
+			    "Could not read enough bytes from file \"%s\": attempted to read %llu bytes from location %llu",
+			    handle.path, nr_bytes, location);
+		}
+		read_buffer += bytes_read;
+		nr_bytes -= bytes_read;
 	}
 }
 
 int64_t LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes) {
-	int fd = ((UnixFileHandle &)handle).fd;
+	int fd = handle.Cast<UnixFileHandle>().fd;
 	int64_t bytes_read = read(fd, buffer, nr_bytes);
 	if (bytes_read == -1) {
 		throw IOException("Could not read from file \"%s\": %s", handle.path, strerror(errno));
@@ -220,19 +287,21 @@ int64_t LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes
 }
 
 void LocalFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
-	int fd = ((UnixFileHandle &)handle).fd;
-	int64_t bytes_written = pwrite(fd, buffer, nr_bytes, location);
-	if (bytes_written == -1) {
-		throw IOException("Could not write file \"%s\": %s", handle.path, strerror(errno));
-	}
-	if (bytes_written != nr_bytes) {
-		throw IOException("Could not write all bytes to file \"%s\": wanted=%lld wrote=%lld", handle.path, nr_bytes,
-		                  bytes_written);
+	int fd = handle.Cast<UnixFileHandle>().fd;
+	auto write_buffer = char_ptr_cast(buffer);
+	while (nr_bytes > 0) {
+		int64_t bytes_written = pwrite(fd, write_buffer, nr_bytes, location);
+		if (bytes_written < 0) {
+			throw IOException("Could not write file \"%s\": %s", handle.path, strerror(errno));
+		}
+		D_ASSERT(bytes_written >= 0 && bytes_written);
+		write_buffer += bytes_written;
+		nr_bytes -= bytes_written;
 	}
 }
 
 int64_t LocalFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes) {
-	int fd = ((UnixFileHandle &)handle).fd;
+	int fd = handle.Cast<UnixFileHandle>().fd;
 	int64_t bytes_written = write(fd, buffer, nr_bytes);
 	if (bytes_written == -1) {
 		throw IOException("Could not write file \"%s\": %s", handle.path, strerror(errno));
@@ -241,7 +310,7 @@ int64_t LocalFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_byte
 }
 
 int64_t LocalFileSystem::GetFileSize(FileHandle &handle) {
-	int fd = ((UnixFileHandle &)handle).fd;
+	int fd = handle.Cast<UnixFileHandle>().fd;
 	struct stat s;
 	if (fstat(fd, &s) == -1) {
 		return -1;
@@ -250,7 +319,7 @@ int64_t LocalFileSystem::GetFileSize(FileHandle &handle) {
 }
 
 time_t LocalFileSystem::GetLastModifiedTime(FileHandle &handle) {
-	int fd = ((UnixFileHandle &)handle).fd;
+	int fd = handle.Cast<UnixFileHandle>().fd;
 	struct stat s;
 	if (fstat(fd, &s) == -1) {
 		return -1;
@@ -259,12 +328,12 @@ time_t LocalFileSystem::GetLastModifiedTime(FileHandle &handle) {
 }
 
 FileType LocalFileSystem::GetFileType(FileHandle &handle) {
-	int fd = ((UnixFileHandle &)handle).fd;
+	int fd = handle.Cast<UnixFileHandle>().fd;
 	return GetFileTypeInternal(fd);
 }
 
 void LocalFileSystem::Truncate(FileHandle &handle, int64_t new_size) {
-	int fd = ((UnixFileHandle &)handle).fd;
+	int fd = handle.Cast<UnixFileHandle>().fd;
 	if (ftruncate(fd, new_size) != 0) {
 		throw IOException("Could not truncate file \"%s\": %s", handle.path, strerror(errno));
 	}
@@ -276,20 +345,6 @@ bool LocalFileSystem::DirectoryExists(const string &directory) {
 			struct stat status;
 			stat(directory.c_str(), &status);
 			if (status.st_mode & S_IFDIR) {
-				return true;
-			}
-		}
-	}
-	// if any condition fails
-	return false;
-}
-
-bool LocalFileSystem::FileExists(const string &filename) {
-	if (!filename.empty()) {
-		if (access(filename.c_str(), 0) == 0) {
-			struct stat status;
-			stat(filename.c_str(), &status);
-			if (!(status.st_mode & S_IFDIR)) {
 				return true;
 			}
 		}
@@ -328,7 +383,7 @@ int RemoveDirectoryRecursive(const char *path) {
 				continue;
 			}
 			len = path_len + (idx_t)strlen(p->d_name) + 2;
-			buf = new char[len];
+			buf = new (std::nothrow) char[len];
 			if (buf) {
 				struct stat statbuf;
 				snprintf(buf, len, "%s/%s", path, p->d_name);
@@ -361,7 +416,8 @@ void LocalFileSystem::RemoveFile(const string &filename) {
 	}
 }
 
-bool LocalFileSystem::ListFiles(const string &directory, const std::function<void(string, bool)> &callback) {
+bool LocalFileSystem::ListFiles(const string &directory, const std::function<void(const string &, bool)> &callback,
+                                FileOpener *opener) {
 	if (!DirectoryExists(directory)) {
 		return false;
 	}
@@ -396,7 +452,7 @@ bool LocalFileSystem::ListFiles(const string &directory, const std::function<voi
 }
 
 void LocalFileSystem::FileSync(FileHandle &handle) {
-	int fd = ((UnixFileHandle &)handle).fd;
+	int fd = handle.Cast<UnixFileHandle>().fd;
 	if (fsync(fd) != 0) {
 		throw FatalException("fsync failed!");
 	}
@@ -409,12 +465,16 @@ void LocalFileSystem::MoveFile(const string &source, const string &target) {
 	}
 }
 
+std::string LocalFileSystem::GetLastErrorAsString() {
+	return string();
+}
+
 #else
 
 constexpr char PIPE_PREFIX[] = "\\\\.\\pipe\\";
 
 // Returns the last Win32 error, in string format. Returns an empty string if there is no error.
-std::string GetLastErrorAsString() {
+std::string LocalFileSystem::GetLastErrorAsString() {
 	// Get the error message, if any.
 	DWORD errorMessageID = GetLastError();
 	if (errorMessageID == 0)
@@ -438,22 +498,26 @@ public:
 	WindowsFileHandle(FileSystem &file_system, string path, HANDLE fd)
 	    : FileHandle(file_system, path), position(0), fd(fd) {
 	}
-	virtual ~WindowsFileHandle() {
+	~WindowsFileHandle() override {
 		Close();
 	}
 
-protected:
-	void Close() override {
-		CloseHandle(fd);
-	};
-
-public:
 	idx_t position;
 	HANDLE fd;
+
+public:
+	void Close() override {
+		if (!fd) {
+			return;
+		}
+		CloseHandle(fd);
+		fd = nullptr;
+	};
 };
 
-unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path, uint8_t flags, FileLockType lock_type,
+unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path_p, uint8_t flags, FileLockType lock_type,
                                                  FileCompressionType compression, FileOpener *opener) {
+	auto path = FileSystem::ExpandPath(path_p, opener);
 	if (compression != FileCompressionType::UNCOMPRESSED) {
 		throw NotImplementedException("Unsupported compression type for default file system");
 	}
@@ -462,7 +526,7 @@ unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path, uint8_t fla
 	DWORD desired_access;
 	DWORD share_mode;
 	DWORD creation_disposition = OPEN_EXISTING;
-	DWORD flags_and_attributes = FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED;
+	DWORD flags_and_attributes = FILE_ATTRIBUTE_NORMAL;
 	bool open_read = flags & FileFlags::FILE_FLAGS_READ;
 	bool open_write = flags & FileFlags::FILE_FLAGS_WRITE;
 	if (open_read && open_write) {
@@ -483,50 +547,57 @@ unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path, uint8_t fla
 		} else if (flags & FileFlags::FILE_FLAGS_FILE_CREATE_NEW) {
 			creation_disposition = CREATE_ALWAYS;
 		}
-		if (flags & FileFlags::FILE_FLAGS_DIRECT_IO) {
-			flags_and_attributes |= FILE_FLAG_WRITE_THROUGH;
-		}
 	}
 	if (flags & FileFlags::FILE_FLAGS_DIRECT_IO) {
 		flags_and_attributes |= FILE_FLAG_NO_BUFFERING;
 	}
-	HANDLE hFile =
-	    CreateFileA(path.c_str(), desired_access, share_mode, NULL, creation_disposition, flags_and_attributes, NULL);
+	auto unicode_path = WindowsUtil::UTF8ToUnicode(path.c_str());
+	HANDLE hFile = CreateFileW(unicode_path.c_str(), desired_access, share_mode, NULL, creation_disposition,
+	                           flags_and_attributes, NULL);
 	if (hFile == INVALID_HANDLE_VALUE) {
-		auto error = GetLastErrorAsString();
+		auto error = LocalFileSystem::GetLastErrorAsString();
 		throw IOException("Cannot open file \"%s\": %s", path.c_str(), error);
 	}
-	auto handle = make_unique<WindowsFileHandle>(*this, path.c_str(), hFile);
+	auto handle = make_uniq<WindowsFileHandle>(*this, path.c_str(), hFile);
 	if (flags & FileFlags::FILE_FLAGS_APPEND) {
 		auto file_size = GetFileSize(*handle);
 		SetFilePointer(*handle, file_size);
 	}
-	return move(handle);
+	return std::move(handle);
 }
 
 void LocalFileSystem::SetFilePointer(FileHandle &handle, idx_t location) {
-	((WindowsFileHandle &)handle).position = location;
+	auto &whandle = handle.Cast<WindowsFileHandle>();
+	whandle.position = location;
+	LARGE_INTEGER wlocation;
+	wlocation.QuadPart = location;
+	SetFilePointerEx(whandle.fd, wlocation, NULL, FILE_BEGIN);
 }
 
 idx_t LocalFileSystem::GetFilePointer(FileHandle &handle) {
-	return ((WindowsFileHandle &)handle).position;
+	return handle.Cast<WindowsFileHandle>().position;
 }
 
-void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
-	HANDLE hFile = ((WindowsFileHandle &)handle).fd;
-	DWORD bytes_read;
+static DWORD FSInternalRead(FileHandle &handle, HANDLE hFile, void *buffer, int64_t nr_bytes, idx_t location) {
+	DWORD bytes_read = 0;
 	OVERLAPPED ov = {};
 	ov.Internal = 0;
 	ov.InternalHigh = 0;
 	ov.Offset = location & 0xFFFFFFFF;
 	ov.OffsetHigh = location >> 32;
 	ov.hEvent = 0;
-	ReadFile(hFile, buffer, (DWORD)nr_bytes, NULL, &ov);
-	auto rc = GetOverlappedResult(hFile, &ov, &bytes_read, true);
-	if (rc == 0) {
-		auto error = GetLastErrorAsString();
-		throw IOException("Could not read file \"%s\": %s", handle.path, error);
+	auto rc = ReadFile(hFile, buffer, (DWORD)nr_bytes, &bytes_read, &ov);
+	if (!rc) {
+		auto error = LocalFileSystem::GetLastErrorAsString();
+		throw IOException("Could not read file \"%s\" (error in ReadFile(location: %llu, nr_bytes: %lld)): %s",
+		                  handle.path, location, nr_bytes, error);
 	}
+	return bytes_read;
+}
+
+void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
+	HANDLE hFile = ((WindowsFileHandle &)handle).fd;
+	auto bytes_read = FSInternalRead(handle, hFile, buffer, nr_bytes, location);
 	if (bytes_read != nr_bytes) {
 		throw IOException("Could not read all bytes from file \"%s\": wanted=%lld read=%lld", handle.path, nr_bytes,
 		                  bytes_read);
@@ -534,41 +605,33 @@ void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, i
 }
 
 int64_t LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes) {
-	HANDLE hFile = ((WindowsFileHandle &)handle).fd;
-	DWORD bytes_read;
-	auto &pos = ((WindowsFileHandle &)handle).position;
-	OVERLAPPED ov = {};
-	ov.Internal = 0;
-	ov.InternalHigh = 0;
-	ov.Offset = pos & 0xFFFFFFFF;
-	ov.OffsetHigh = pos >> 32;
-	ov.hEvent = 0;
+	HANDLE hFile = handle.Cast<WindowsFileHandle>().fd;
+	auto &pos = handle.Cast<WindowsFileHandle>().position;
 	auto n = std::min<idx_t>(std::max<idx_t>(GetFileSize(handle), pos) - pos, nr_bytes);
-	ReadFile(hFile, buffer, (DWORD)n, NULL, &ov);
-	auto rc = GetOverlappedResult(hFile, &ov, &bytes_read, true);
-	if (rc == 0) {
-		auto error = GetLastErrorAsString();
-		throw IOException("Could not read file \"%s\": %s", handle.path, error);
-	}
+	auto bytes_read = FSInternalRead(handle, hFile, buffer, n, pos);
 	pos += bytes_read;
 	return bytes_read;
 }
 
-void LocalFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
-	HANDLE hFile = ((WindowsFileHandle &)handle).fd;
-	DWORD bytes_written;
+static DWORD FSInternalWrite(FileHandle &handle, HANDLE hFile, void *buffer, int64_t nr_bytes, idx_t location) {
+	DWORD bytes_written = 0;
 	OVERLAPPED ov = {};
 	ov.Internal = 0;
 	ov.InternalHigh = 0;
 	ov.Offset = location & 0xFFFFFFFF;
 	ov.OffsetHigh = location >> 32;
 	ov.hEvent = 0;
-	WriteFile(hFile, buffer, (DWORD)nr_bytes, NULL, &ov);
-	auto rc = GetOverlappedResult(hFile, &ov, &bytes_written, true);
-	if (rc == 0) {
-		auto error = GetLastErrorAsString();
-		throw IOException("Could not write file \"%s\": %s", handle.path, error);
+	auto rc = WriteFile(hFile, buffer, (DWORD)nr_bytes, &bytes_written, &ov);
+	if (!rc) {
+		auto error = LocalFileSystem::GetLastErrorAsString();
+		throw IOException("Could not write file \"%s\" (error in WriteFile): %s", handle.path, error);
 	}
+	return bytes_written;
+}
+
+void LocalFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
+	HANDLE hFile = handle.Cast<WindowsFileHandle>().fd;
+	auto bytes_written = FSInternalWrite(handle, hFile, buffer, nr_bytes, location);
 	if (bytes_written != nr_bytes) {
 		throw IOException("Could not write all bytes from file \"%s\": wanted=%lld wrote=%lld", handle.path, nr_bytes,
 		                  bytes_written);
@@ -576,27 +639,15 @@ void LocalFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes, 
 }
 
 int64_t LocalFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes) {
-	HANDLE hFile = ((WindowsFileHandle &)handle).fd;
-	DWORD bytes_written;
-	auto &pos = ((WindowsFileHandle &)handle).position;
-	OVERLAPPED ov = {};
-	ov.Internal = 0;
-	ov.InternalHigh = 0;
-	ov.Offset = pos & 0xFFFFFFFF;
-	ov.OffsetHigh = pos >> 32;
-	ov.hEvent = 0;
-	WriteFile(hFile, buffer, (DWORD)nr_bytes, NULL, &ov);
-	auto rc = GetOverlappedResult(hFile, &ov, &bytes_written, true);
-	if (rc == 0) {
-		auto error = GetLastErrorAsString();
-		throw IOException("Could not write file \"%s\": %s", handle.path, error);
-	}
+	HANDLE hFile = handle.Cast<WindowsFileHandle>().fd;
+	auto &pos = handle.Cast<WindowsFileHandle>().position;
+	auto bytes_written = FSInternalWrite(handle, hFile, buffer, nr_bytes, pos);
 	pos += bytes_written;
 	return bytes_written;
 }
 
 int64_t LocalFileSystem::GetFileSize(FileHandle &handle) {
-	HANDLE hFile = ((WindowsFileHandle &)handle).fd;
+	HANDLE hFile = handle.Cast<WindowsFileHandle>().fd;
 	LARGE_INTEGER result;
 	if (!GetFileSizeEx(hFile, &result)) {
 		return -1;
@@ -605,7 +656,7 @@ int64_t LocalFileSystem::GetFileSize(FileHandle &handle) {
 }
 
 time_t LocalFileSystem::GetLastModifiedTime(FileHandle &handle) {
-	HANDLE hFile = ((WindowsFileHandle &)handle).fd;
+	HANDLE hFile = handle.Cast<WindowsFileHandle>().fd;
 
 	// https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfiletime
 	FILETIME last_write;
@@ -631,103 +682,87 @@ time_t LocalFileSystem::GetLastModifiedTime(FileHandle &handle) {
 }
 
 void LocalFileSystem::Truncate(FileHandle &handle, int64_t new_size) {
-	HANDLE hFile = ((WindowsFileHandle &)handle).fd;
+	HANDLE hFile = handle.Cast<WindowsFileHandle>().fd;
 	// seek to the location
 	SetFilePointer(handle, new_size);
 	// now set the end of file position
 	if (!SetEndOfFile(hFile)) {
-		auto error = GetLastErrorAsString();
+		auto error = LocalFileSystem::GetLastErrorAsString();
 		throw IOException("Failure in SetEndOfFile call on file \"%s\": %s", handle.path, error);
 	}
 }
 
-bool LocalFileSystem::DirectoryExists(const string &directory) {
-	DWORD attrs = GetFileAttributesA(directory.c_str());
-	return (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY));
+static DWORD WindowsGetFileAttributes(const string &filename) {
+	auto unicode_path = WindowsUtil::UTF8ToUnicode(filename.c_str());
+	return GetFileAttributesW(unicode_path.c_str());
 }
 
-bool LocalFileSystem::FileExists(const string &filename) {
-	DWORD attrs = GetFileAttributesA(filename.c_str());
-	return (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY));
+bool LocalFileSystem::DirectoryExists(const string &directory) {
+	DWORD attrs = WindowsGetFileAttributes(directory);
+	return (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY));
 }
 
 void LocalFileSystem::CreateDirectory(const string &directory) {
 	if (DirectoryExists(directory)) {
 		return;
 	}
-	if (directory.empty() || !CreateDirectoryA(directory.c_str(), NULL) || !DirectoryExists(directory)) {
-		throw IOException("Could not create directory!");
+	auto unicode_path = WindowsUtil::UTF8ToUnicode(directory.c_str());
+	if (directory.empty() || !CreateDirectoryW(unicode_path.c_str(), NULL) || !DirectoryExists(directory)) {
+		throw IOException("Could not create directory: \'%s\'", directory.c_str());
 	}
 }
 
-static void delete_dir_special_snowflake_windows(FileSystem &fs, string directory) {
-	if (directory.size() + 3 > MAX_PATH) {
-		throw IOException("Pathname too long");
-	}
-	// create search pattern
-	TCHAR szDir[MAX_PATH];
-	snprintf(szDir, MAX_PATH, "%s\\*", directory.c_str());
-
-	WIN32_FIND_DATA ffd;
-	HANDLE hFind = FindFirstFile(szDir, &ffd);
-	if (hFind == INVALID_HANDLE_VALUE) {
-		return;
-	}
-
-	do {
-		if (string(ffd.cFileName) == "." || string(ffd.cFileName) == "..") {
-			continue;
-		}
-		if (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-			// recurse to zap directory contents
-			delete_dir_special_snowflake_windows(fs, fs.JoinPath(directory, ffd.cFileName));
+static void DeleteDirectoryRecursive(FileSystem &fs, string directory) {
+	fs.ListFiles(directory, [&](const string &fname, bool is_directory) {
+		if (is_directory) {
+			DeleteDirectoryRecursive(fs, fs.JoinPath(directory, fname));
 		} else {
-			if (strlen(ffd.cFileName) + directory.size() + 1 > MAX_PATH) {
-				throw IOException("Pathname too long");
-			}
-			// create search pattern
-			TCHAR del_path[MAX_PATH];
-			snprintf(del_path, MAX_PATH, "%s\\%s", directory.c_str(), ffd.cFileName);
-			if (!DeleteFileA(del_path)) {
-				throw IOException("Failed to delete directory entry");
-			}
+			fs.RemoveFile(fs.JoinPath(directory, fname));
 		}
-	} while (FindNextFile(hFind, &ffd) != 0);
-
-	DWORD dwError = GetLastError();
-	if (dwError != ERROR_NO_MORE_FILES) {
-		throw IOException("Something went wrong");
-	}
-	FindClose(hFind);
-
-	if (!RemoveDirectoryA(directory.c_str())) {
-		throw IOException("Failed to delete directory");
+	});
+	auto unicode_path = WindowsUtil::UTF8ToUnicode(directory.c_str());
+	if (!RemoveDirectoryW(unicode_path.c_str())) {
+		auto error = LocalFileSystem::GetLastErrorAsString();
+		throw IOException("Failed to delete directory \"%s\": %s", directory, error);
 	}
 }
 
 void LocalFileSystem::RemoveDirectory(const string &directory) {
-	delete_dir_special_snowflake_windows(*this, directory.c_str());
+	if (FileExists(directory)) {
+		throw IOException("Attempting to delete directory \"%s\", but it is a file and not a directory!", directory);
+	}
+	if (!DirectoryExists(directory)) {
+		return;
+	}
+	DeleteDirectoryRecursive(*this, directory.c_str());
 }
 
 void LocalFileSystem::RemoveFile(const string &filename) {
-	DeleteFileA(filename.c_str());
+	auto unicode_path = WindowsUtil::UTF8ToUnicode(filename.c_str());
+	if (!DeleteFileW(unicode_path.c_str())) {
+		auto error = LocalFileSystem::GetLastErrorAsString();
+		throw IOException("Failed to delete file \"%s\": %s", filename, error);
+	}
 }
 
-bool LocalFileSystem::ListFiles(const string &directory, const std::function<void(string, bool)> &callback) {
+bool LocalFileSystem::ListFiles(const string &directory, const std::function<void(const string &, bool)> &callback,
+                                FileOpener *opener) {
 	string search_dir = JoinPath(directory, "*");
 
-	WIN32_FIND_DATA ffd;
-	HANDLE hFind = FindFirstFile(search_dir.c_str(), &ffd);
+	auto unicode_path = WindowsUtil::UTF8ToUnicode(search_dir.c_str());
+
+	WIN32_FIND_DATAW ffd;
+	HANDLE hFind = FindFirstFileW(unicode_path.c_str(), &ffd);
 	if (hFind == INVALID_HANDLE_VALUE) {
 		return false;
 	}
 	do {
-		string cFileName = string(ffd.cFileName);
+		string cFileName = WindowsUtil::UnicodeToUTF8(ffd.cFileName);
 		if (cFileName == "." || cFileName == "..") {
 			continue;
 		}
 		callback(cFileName, ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
-	} while (FindNextFile(hFind, &ffd) != 0);
+	} while (FindNextFileW(hFind, &ffd) != 0);
 
 	DWORD dwError = GetLastError();
 	if (dwError != ERROR_NO_MORE_FILES) {
@@ -740,25 +775,27 @@ bool LocalFileSystem::ListFiles(const string &directory, const std::function<voi
 }
 
 void LocalFileSystem::FileSync(FileHandle &handle) {
-	HANDLE hFile = ((WindowsFileHandle &)handle).fd;
+	HANDLE hFile = handle.Cast<WindowsFileHandle>().fd;
 	if (FlushFileBuffers(hFile) == 0) {
 		throw IOException("Could not flush file handle to disk!");
 	}
 }
 
 void LocalFileSystem::MoveFile(const string &source, const string &target) {
-	if (!MoveFileA(source.c_str(), target.c_str())) {
-		throw IOException("Could not move file");
+	auto source_unicode = WindowsUtil::UTF8ToUnicode(source.c_str());
+	auto target_unicode = WindowsUtil::UTF8ToUnicode(target.c_str());
+	if (!MoveFileW(source_unicode.c_str(), target_unicode.c_str())) {
+		throw IOException("Could not move file: %s", GetLastErrorAsString());
 	}
 }
 
 FileType LocalFileSystem::GetFileType(FileHandle &handle) {
-	auto path = ((WindowsFileHandle &)handle).path;
+	auto path = handle.Cast<WindowsFileHandle>().path;
 	// pipes in windows are just files in '\\.\pipe\' folder
 	if (strncmp(path.c_str(), PIPE_PREFIX, strlen(PIPE_PREFIX)) == 0) {
 		return FileType::FILE_TYPE_FIFO;
 	}
-	DWORD attrs = GetFileAttributesA(path.c_str());
+	DWORD attrs = WindowsGetFileAttributes(path.c_str());
 	if (attrs != INVALID_FILE_ATTRIBUTES) {
 		if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
 			return FileType::FILE_TYPE_DIR;
@@ -792,22 +829,49 @@ idx_t LocalFileSystem::SeekPosition(FileHandle &handle) {
 	return GetFilePointer(handle);
 }
 
-static bool HasGlob(const string &str) {
-	for (idx_t i = 0; i < str.size(); i++) {
-		switch (str[i]) {
-		case '*':
-		case '?':
-		case '[':
-			return true;
-		default:
-			break;
-		}
-	}
-	return false;
+static bool IsCrawl(const string &glob) {
+	// glob must match exactly
+	return glob == "**";
+}
+static bool HasMultipleCrawl(const vector<string> &splits) {
+	return std::count(splits.begin(), splits.end(), "**") > 1;
+}
+static bool IsSymbolicLink(const string &path) {
+#ifndef _WIN32
+	struct stat status;
+	return (lstat(path.c_str(), &status) != -1 && S_ISLNK(status.st_mode));
+#else
+	auto attributes = WindowsGetFileAttributes(path);
+	if (attributes == INVALID_FILE_ATTRIBUTES)
+		return false;
+	return attributes & FILE_ATTRIBUTE_REPARSE_POINT;
+#endif
 }
 
-static void GlobFiles(FileSystem &fs, const string &path, const string &glob, bool match_directory,
-                      vector<string> &result, bool join_path) {
+static void RecursiveGlobDirectories(FileSystem &fs, const string &path, vector<string> &result, bool match_directory,
+                                     bool join_path) {
+
+	fs.ListFiles(path, [&](const string &fname, bool is_directory) {
+		string concat;
+		if (join_path) {
+			concat = fs.JoinPath(path, fname);
+		} else {
+			concat = fname;
+		}
+		if (IsSymbolicLink(concat)) {
+			return;
+		}
+		if (is_directory == match_directory) {
+			result.push_back(concat);
+		}
+		if (is_directory) {
+			RecursiveGlobDirectories(fs, concat, result, match_directory, true);
+		}
+	});
+}
+
+static void GlobFilesInternal(FileSystem &fs, const string &path, const string &glob, bool match_directory,
+                              vector<string> &result, bool join_path) {
 	fs.ListFiles(path, [&](const string &fname, bool is_directory) {
 		if (is_directory != match_directory) {
 			return;
@@ -822,18 +886,29 @@ static void GlobFiles(FileSystem &fs, const string &path, const string &glob, bo
 	});
 }
 
-vector<string> LocalFileSystem::Glob(const string &path) {
+vector<string> LocalFileSystem::FetchFileWithoutGlob(const string &path, FileOpener *opener, bool absolute_path) {
+	vector<string> result;
+	if (FileExists(path) || IsPipe(path)) {
+		result.push_back(path);
+	} else if (!absolute_path) {
+		Value value;
+		if (opener && opener->TryGetCurrentSetting("file_search_path", value)) {
+			auto search_paths_str = value.ToString();
+			vector<std::string> search_paths = StringUtil::Split(search_paths_str, ',');
+			for (const auto &search_path : search_paths) {
+				auto joined_path = JoinPath(search_path, path);
+				if (FileExists(joined_path) || IsPipe(joined_path)) {
+					result.push_back(joined_path);
+				}
+			}
+		}
+	}
+	return result;
+}
+
+vector<string> LocalFileSystem::Glob(const string &path, FileOpener *opener) {
 	if (path.empty()) {
 		return vector<string>();
-	}
-	// first check if the path has a glob at all
-	if (!HasGlob(path)) {
-		// no glob: return only the file (if it exists)
-		vector<string> result;
-		if (FileExists(path)) {
-			result.push_back(path);
-		}
-		return result;
 	}
 	// split up the path into separate chunks
 	vector<string> splits;
@@ -864,17 +939,41 @@ vector<string> LocalFileSystem::Glob(const string &path) {
 		absolute_path = true;
 	} else if (splits[0] == "~") {
 		// starts with home directory
-		auto home_directory = GetHomeDirectory();
+		auto home_directory = GetHomeDirectory(opener);
 		if (!home_directory.empty()) {
 			absolute_path = true;
 			splits[0] = home_directory;
+			D_ASSERT(path[0] == '~');
+			if (!HasGlob(path)) {
+				return Glob(home_directory + path.substr(1));
+			}
 		}
+	}
+	// Check if the path has a glob at all
+	if (!HasGlob(path)) {
+		// no glob: return only the file (if it exists or is a pipe)
+		return FetchFileWithoutGlob(path, opener, absolute_path);
 	}
 	vector<string> previous_directories;
 	if (absolute_path) {
 		// for absolute paths, we don't start by scanning the current directory
 		previous_directories.push_back(splits[0]);
+	} else {
+		// If file_search_path is set, use those paths as the first glob elements
+		Value value;
+		if (opener && opener->TryGetCurrentSetting("file_search_path", value)) {
+			auto search_paths_str = value.ToString();
+			vector<std::string> search_paths = StringUtil::Split(search_paths_str, ',');
+			for (const auto &search_path : search_paths) {
+				previous_directories.push_back(search_path);
+			}
+		}
 	}
+
+	if (HasMultipleCrawl(splits)) {
+		throw IOException("Cannot use multiple \'**\' in one path");
+	}
+
 	for (idx_t i = absolute_path ? 1 : 0; i < splits.size(); i++) {
 		bool is_last_chunk = i + 1 == splits.size();
 		bool has_glob = HasGlob(splits[i]);
@@ -886,32 +985,59 @@ vector<string> LocalFileSystem::Glob(const string &path) {
 			if (previous_directories.empty()) {
 				result.push_back(splits[i]);
 			} else {
-				for (auto &prev_directory : previous_directories) {
-					result.push_back(JoinPath(prev_directory, splits[i]));
+				if (is_last_chunk) {
+					for (auto &prev_directory : previous_directories) {
+						const string filename = JoinPath(prev_directory, splits[i]);
+						if (FileExists(filename) || DirectoryExists(filename)) {
+							result.push_back(filename);
+						}
+					}
+				} else {
+					for (auto &prev_directory : previous_directories) {
+						result.push_back(JoinPath(prev_directory, splits[i]));
+					}
 				}
 			}
 		} else {
-			if (previous_directories.empty()) {
-				// no previous directories: list in the current path
-				GlobFiles(*this, ".", splits[i], !is_last_chunk, result, false);
+			if (IsCrawl(splits[i])) {
+				if (!is_last_chunk) {
+					result = previous_directories;
+				}
+				if (previous_directories.empty()) {
+					RecursiveGlobDirectories(*this, ".", result, !is_last_chunk, false);
+				} else {
+					for (auto &prev_dir : previous_directories) {
+						RecursiveGlobDirectories(*this, prev_dir, result, !is_last_chunk, true);
+					}
+				}
 			} else {
-				// previous directories
-				// we iterate over each of the previous directories, and apply the glob of the current directory
-				for (auto &prev_directory : previous_directories) {
-					GlobFiles(*this, prev_directory, splits[i], !is_last_chunk, result, true);
+				if (previous_directories.empty()) {
+					// no previous directories: list in the current path
+					GlobFilesInternal(*this, ".", splits[i], !is_last_chunk, result, false);
+				} else {
+					// previous directories
+					// we iterate over each of the previous directories, and apply the glob of the current directory
+					for (auto &prev_directory : previous_directories) {
+						GlobFilesInternal(*this, prev_directory, splits[i], !is_last_chunk, result, true);
+					}
 				}
 			}
 		}
-		if (is_last_chunk || result.empty()) {
+		if (result.empty()) {
+			// no result found that matches the glob
+			// last ditch effort: search the path as a string literal
+			return FetchFileWithoutGlob(path, opener, absolute_path);
+		}
+		if (is_last_chunk) {
 			return result;
 		}
-		previous_directories = move(result);
+		previous_directories = std::move(result);
 	}
 	return vector<string>();
 }
 
 unique_ptr<FileSystem> FileSystem::CreateLocal() {
-	return make_unique<LocalFileSystem>();
+	return make_uniq<LocalFileSystem>();
 }
 
 } // namespace duckdb

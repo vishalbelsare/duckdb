@@ -18,6 +18,9 @@ namespace duckdb {
 //! LogicalJoin represents a join between two relations
 class LogicalJoin : public LogicalOperator {
 public:
+	static constexpr const LogicalOperatorType TYPE = LogicalOperatorType::LOGICAL_INVALID;
+
+public:
 	explicit LogicalJoin(JoinType type, LogicalOperatorType logical_type = LogicalOperatorType::LOGICAL_JOIN);
 
 	// Gets the set of table references that are reachable from this node
@@ -37,6 +40,8 @@ public:
 
 public:
 	vector<ColumnBinding> GetColumnBindings() override;
+	void Serialize(FieldWriter &writer) const override;
+	static void Deserialize(LogicalJoin &join, LogicalDeserializationState &state, FieldReader &reader);
 
 protected:
 	void ResolveTypes() override;

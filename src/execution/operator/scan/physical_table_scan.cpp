@@ -4,117 +4,99 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/transaction/transaction.hpp"
-#include "duckdb/parallel/parallel_state.hpp"
 
 #include <utility>
 
 namespace duckdb {
 
 PhysicalTableScan::PhysicalTableScan(vector<LogicalType> types, TableFunction function_p,
-                                     unique_ptr<FunctionData> bind_data_p, vector<column_t> column_ids_p,
+                                     unique_ptr<FunctionData> bind_data_p, vector<LogicalType> returned_types_p,
+                                     vector<column_t> column_ids_p, vector<idx_t> projection_ids_p,
                                      vector<string> names_p, unique_ptr<TableFilterSet> table_filters_p,
-                                     idx_t estimated_cardinality)
-    : PhysicalOperator(PhysicalOperatorType::TABLE_SCAN, move(types), estimated_cardinality),
-      function(move(function_p)), bind_data(move(bind_data_p)), column_ids(move(column_ids_p)), names(move(names_p)),
-      table_filters(move(table_filters_p)) {
+                                     idx_t estimated_cardinality, ExtraOperatorInfo extra_info)
+    : PhysicalOperator(PhysicalOperatorType::TABLE_SCAN, std::move(types), estimated_cardinality),
+      function(std::move(function_p)), bind_data(std::move(bind_data_p)), returned_types(std::move(returned_types_p)),
+      column_ids(std::move(column_ids_p)), projection_ids(std::move(projection_ids_p)), names(std::move(names_p)),
+      table_filters(std::move(table_filters_p)), extra_info(extra_info) {
 }
 
-class TableScanGlobalState : public GlobalSourceState {
+class TableScanGlobalSourceState : public GlobalSourceState {
 public:
-	TableScanGlobalState(ClientContext &context, const PhysicalTableScan &op) {
-		if (!op.function.max_threads || !op.function.init_parallel_state) {
-			// table function cannot be parallelized
-			return;
-		}
-		// table function can be parallelized
-		// check how many threads we can have
-		max_threads = op.function.max_threads(context, op.bind_data.get());
-		if (max_threads <= 1) {
-			return;
-		}
-		if (op.function.init_parallel_state) {
-			TableFilterCollection collection(op.table_filters.get());
-			parallel_state = op.function.init_parallel_state(context, op.bind_data.get(), op.column_ids, &collection);
+	TableScanGlobalSourceState(ClientContext &context, const PhysicalTableScan &op) {
+		if (op.function.init_global) {
+			TableFunctionInitInput input(op.bind_data.get(), op.column_ids, op.projection_ids, op.table_filters.get());
+			global_state = op.function.init_global(context, input);
+			if (global_state) {
+				max_threads = global_state->MaxThreads();
+			}
+		} else {
+			max_threads = 1;
 		}
 	}
 
 	idx_t max_threads = 0;
-	unique_ptr<ParallelState> parallel_state;
+	unique_ptr<GlobalTableFunctionState> global_state;
 
 	idx_t MaxThreads() override {
 		return max_threads;
 	}
 };
 
-class TableScanLocalState : public LocalSourceState {
+class TableScanLocalSourceState : public LocalSourceState {
 public:
-	TableScanLocalState(ExecutionContext &context, TableScanGlobalState &gstate, const PhysicalTableScan &op) {
-		TableFilterCollection filters(op.table_filters.get());
-		if (gstate.parallel_state) {
-			// parallel scan init
-			operator_data = op.function.parallel_init(context.client, op.bind_data.get(), gstate.parallel_state.get(),
-			                                          op.column_ids, &filters);
-		} else if (op.function.init) {
-			// sequential scan init
-			operator_data = op.function.init(context.client, op.bind_data.get(), op.column_ids, &filters);
+	TableScanLocalSourceState(ExecutionContext &context, TableScanGlobalSourceState &gstate,
+	                          const PhysicalTableScan &op) {
+		if (op.function.init_local) {
+			TableFunctionInitInput input(op.bind_data.get(), op.column_ids, op.projection_ids, op.table_filters.get());
+			local_state = op.function.init_local(context, input, gstate.global_state.get());
 		}
 	}
 
-	unique_ptr<FunctionOperatorData> operator_data;
+	unique_ptr<LocalTableFunctionState> local_state;
 };
 
 unique_ptr<LocalSourceState> PhysicalTableScan::GetLocalSourceState(ExecutionContext &context,
                                                                     GlobalSourceState &gstate) const {
-	return make_unique<TableScanLocalState>(context, (TableScanGlobalState &)gstate, *this);
+	return make_uniq<TableScanLocalSourceState>(context, gstate.Cast<TableScanGlobalSourceState>(), *this);
 }
 
 unique_ptr<GlobalSourceState> PhysicalTableScan::GetGlobalSourceState(ClientContext &context) const {
-	return make_unique<TableScanGlobalState>(context, *this);
+	return make_uniq<TableScanGlobalSourceState>(context, *this);
 }
 
-void PhysicalTableScan::GetData(ExecutionContext &context, DataChunk &chunk, GlobalSourceState &gstate_p,
-                                LocalSourceState &lstate) const {
+SourceResultType PhysicalTableScan::GetData(ExecutionContext &context, DataChunk &chunk,
+                                            OperatorSourceInput &input) const {
 	D_ASSERT(!column_ids.empty());
-	auto &gstate = (TableScanGlobalState &)gstate_p;
-	auto &state = (TableScanLocalState &)lstate;
+	auto &gstate = input.global_state.Cast<TableScanGlobalSourceState>();
+	auto &state = input.local_state.Cast<TableScanLocalSourceState>();
 
-	if (!gstate.parallel_state) {
-		// sequential scan
-		function.function(context.client, bind_data.get(), state.operator_data.get(), nullptr, chunk);
-		if (chunk.size() != 0) {
-			return;
-		}
-	} else {
-		// parallel scan
-		do {
-			if (function.parallel_function) {
-				function.parallel_function(context.client, bind_data.get(), state.operator_data.get(), nullptr, chunk,
-				                           gstate.parallel_state.get());
-			} else {
-				function.function(context.client, bind_data.get(), state.operator_data.get(), nullptr, chunk);
-			}
+	TableFunctionInput data(bind_data.get(), state.local_state.get(), gstate.global_state.get());
+	function.function(context.client, data, chunk);
 
-			if (chunk.size() == 0) {
-				D_ASSERT(function.parallel_state_next);
-				if (function.parallel_state_next(context.client, bind_data.get(), state.operator_data.get(),
-				                                 gstate.parallel_state.get())) {
-					continue;
-				} else {
-					break;
-				}
-			} else {
-				return;
-			}
-		} while (true);
+	return chunk.size() == 0 ? SourceResultType::FINISHED : SourceResultType::HAVE_MORE_OUTPUT;
+}
+
+double PhysicalTableScan::GetProgress(ClientContext &context, GlobalSourceState &gstate_p) const {
+	auto &gstate = gstate_p.Cast<TableScanGlobalSourceState>();
+	if (function.table_scan_progress) {
+		return function.table_scan_progress(context, bind_data.get(), gstate.global_state.get());
 	}
-	D_ASSERT(chunk.size() == 0);
-	if (function.cleanup) {
-		function.cleanup(context.client, bind_data.get(), state.operator_data.get());
-	}
+	// if table_scan_progress is not implemented we don't support this function yet in the progress bar
+	return -1;
+}
+
+idx_t PhysicalTableScan::GetBatchIndex(ExecutionContext &context, DataChunk &chunk, GlobalSourceState &gstate_p,
+                                       LocalSourceState &lstate) const {
+	D_ASSERT(SupportsBatchIndex());
+	D_ASSERT(function.get_batch_index);
+	auto &gstate = gstate_p.Cast<TableScanGlobalSourceState>();
+	auto &state = lstate.Cast<TableScanLocalSourceState>();
+	return function.get_batch_index(context.client, bind_data.get(), state.local_state.get(),
+	                                gstate.global_state.get());
 }
 
 string PhysicalTableScan::GetName() const {
-	return StringUtil::Upper(function.name);
+	return StringUtil::Upper(function.name + " " + function.extra_info);
 }
 
 string PhysicalTableScan::ParamsToString() const {
@@ -124,12 +106,25 @@ string PhysicalTableScan::ParamsToString() const {
 		result += "\n[INFOSEPARATOR]\n";
 	}
 	if (function.projection_pushdown) {
-		for (idx_t i = 0; i < column_ids.size(); i++) {
-			if (column_ids[i] < names.size()) {
-				if (i > 0) {
-					result += "\n";
+		if (function.filter_prune) {
+			for (idx_t i = 0; i < projection_ids.size(); i++) {
+				const auto &column_id = column_ids[projection_ids[i]];
+				if (column_id < names.size()) {
+					if (i > 0) {
+						result += "\n";
+					}
+					result += names[column_id];
 				}
-				result += names[column_ids[i]];
+			}
+		} else {
+			for (idx_t i = 0; i < column_ids.size(); i++) {
+				const auto &column_id = column_ids[i];
+				if (column_id < names.size()) {
+					if (i > 0) {
+						result += "\n";
+					}
+					result += names[column_id];
+				}
 			}
 		}
 	}
@@ -145,6 +140,12 @@ string PhysicalTableScan::ParamsToString() const {
 			}
 		}
 	}
+	if (!extra_info.file_filters.empty()) {
+		result += "\n[INFOSEPARATOR]\n";
+		result += "File Filters: " + extra_info.file_filters;
+	}
+	result += "\n[INFOSEPARATOR]\n";
+	result += StringUtil::Format("EC: %llu", estimated_cardinality);
 	return result;
 }
 
@@ -152,7 +153,7 @@ bool PhysicalTableScan::Equals(const PhysicalOperator &other_p) const {
 	if (type != other_p.type) {
 		return false;
 	}
-	auto &other = (PhysicalTableScan &)other_p;
+	auto &other = other_p.Cast<PhysicalTableScan>();
 	if (function.function != other.function.function) {
 		return false;
 	}

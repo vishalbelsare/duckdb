@@ -10,9 +10,12 @@ add_library_unity(
   distributivity.cpp
   empty_needle_removal.cpp
   enum_comparison.cpp
+  equal_or_null_simplification.cpp
   move_constants.cpp
   like_optimizations.cpp
-  in_clause_simplification_rule.cpp)
+  in_clause_simplification_rule.cpp
+  ordered_aggregate_optimizer.cpp
+  regex_optimizations.cpp)
 set(ALL_OBJECT_FILES
     ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:duckdb_optimizer_rules>
     PARENT_SCOPE)

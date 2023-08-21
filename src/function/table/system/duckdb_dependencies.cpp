@@ -1,6 +1,7 @@
 #include "duckdb/function/table/system_functions.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/duck_catalog.hpp"
 #include "duckdb/catalog/dependency_manager.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -8,12 +9,16 @@
 namespace duckdb {
 
 struct DependencyInformation {
-	CatalogEntry *object;
-	CatalogEntry *dependent;
+	DependencyInformation(CatalogEntry &object, CatalogEntry &dependent, DependencyType type)
+	    : object(object), dependent(dependent), type(type) {
+	}
+
+	CatalogEntry &object;
+	CatalogEntry &dependent;
 	DependencyType type;
 };
 
-struct DuckDBDependenciesData : public FunctionOperatorData {
+struct DuckDBDependenciesData : public GlobalTableFunctionState {
 	DuckDBDependenciesData() : offset(0) {
 	}
 
@@ -21,57 +26,50 @@ struct DuckDBDependenciesData : public FunctionOperatorData {
 	idx_t offset;
 };
 
-static unique_ptr<FunctionData> DuckDBDependenciesBind(ClientContext &context, vector<Value> &inputs,
-                                                       unordered_map<string, Value> &named_parameters,
-                                                       vector<LogicalType> &input_table_types,
-                                                       vector<string> &input_table_names,
+static unique_ptr<FunctionData> DuckDBDependenciesBind(ClientContext &context, TableFunctionBindInput &input,
                                                        vector<LogicalType> &return_types, vector<string> &names) {
 	names.emplace_back("classid");
-	return_types.push_back(LogicalType::BIGINT);
+	return_types.emplace_back(LogicalType::BIGINT);
 
 	names.emplace_back("objid");
-	return_types.push_back(LogicalType::BIGINT);
+	return_types.emplace_back(LogicalType::BIGINT);
 
 	names.emplace_back("objsubid");
-	return_types.push_back(LogicalType::INTEGER);
+	return_types.emplace_back(LogicalType::INTEGER);
 
 	names.emplace_back("refclassid");
-	return_types.push_back(LogicalType::BIGINT);
+	return_types.emplace_back(LogicalType::BIGINT);
 
 	names.emplace_back("refobjid");
-	return_types.push_back(LogicalType::BIGINT);
+	return_types.emplace_back(LogicalType::BIGINT);
 
 	names.emplace_back("refobjsubid");
-	return_types.push_back(LogicalType::INTEGER);
+	return_types.emplace_back(LogicalType::INTEGER);
 
 	names.emplace_back("deptype");
-	return_types.push_back(LogicalType::VARCHAR);
+	return_types.emplace_back(LogicalType::VARCHAR);
 
 	return nullptr;
 }
 
-unique_ptr<FunctionOperatorData> DuckDBDependenciesInit(ClientContext &context, const FunctionData *bind_data,
-                                                        const vector<column_t> &column_ids,
-                                                        TableFilterCollection *filters) {
-	auto result = make_unique<DuckDBDependenciesData>();
+unique_ptr<GlobalTableFunctionState> DuckDBDependenciesInit(ClientContext &context, TableFunctionInitInput &input) {
+	auto result = make_uniq<DuckDBDependenciesData>();
 
 	// scan all the schemas and collect them
-	auto &catalog = Catalog::GetCatalog(context);
-	auto &dependency_manager = catalog.GetDependencyManager();
-	dependency_manager.Scan([&](CatalogEntry *obj, CatalogEntry *dependent, DependencyType type) {
-		DependencyInformation info;
-		info.object = obj;
-		info.dependent = dependent;
-		info.type = type;
-		result->entries.push_back(info);
-	});
+	auto &catalog = Catalog::GetCatalog(context, INVALID_CATALOG);
+	if (catalog.IsDuckCatalog()) {
+		auto &duck_catalog = catalog.Cast<DuckCatalog>();
+		auto &dependency_manager = duck_catalog.GetDependencyManager();
+		dependency_manager.Scan([&](CatalogEntry &obj, CatalogEntry &dependent, DependencyType type) {
+			result->entries.emplace_back(obj, dependent, type);
+		});
+	}
 
-	return move(result);
+	return std::move(result);
 }
 
-void DuckDBDependenciesFunction(ClientContext &context, const FunctionData *bind_data,
-                                FunctionOperatorData *operator_state, DataChunk *input, DataChunk &output) {
-	auto &data = (DuckDBDependenciesData &)*operator_state;
+void DuckDBDependenciesFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &data = data_p.global_state->Cast<DuckDBDependenciesData>();
 	if (data.offset >= data.entries.size()) {
 		// finished returning values
 		return;
@@ -86,13 +84,13 @@ void DuckDBDependenciesFunction(ClientContext &context, const FunctionData *bind
 		// classid, LogicalType::BIGINT
 		output.SetValue(0, count, Value::BIGINT(0));
 		// objid, LogicalType::BIGINT
-		output.SetValue(1, count, Value::BIGINT(entry.object->oid));
+		output.SetValue(1, count, Value::BIGINT(entry.object.oid));
 		// objsubid, LogicalType::INTEGER
 		output.SetValue(2, count, Value::INTEGER(0));
 		// refclassid, LogicalType::BIGINT
 		output.SetValue(3, count, Value::BIGINT(0));
 		// refobjid, LogicalType::BIGINT
-		output.SetValue(4, count, Value::BIGINT(entry.dependent->oid));
+		output.SetValue(4, count, Value::BIGINT(entry.dependent.oid));
 		// refobjsubid, LogicalType::INTEGER
 		output.SetValue(5, count, Value::INTEGER(0));
 		// deptype, LogicalType::VARCHAR

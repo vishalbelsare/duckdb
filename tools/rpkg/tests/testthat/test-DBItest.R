@@ -1,4 +1,3 @@
-library("testthat")
 skip_on_cran()
 
 DBItest::test_all(c(
@@ -23,7 +22,7 @@ DBItest::test_all(c(
   "append_roundtrip_64_bit_numeric",
   "append_roundtrip_64_bit_character",
   "append_roundtrip_64_bit_roundtrip",
-
+  #
   "column_info_consistent", # won't fix: https://github.com/r-dbi/DBItest/issues/181
 
   "read_table", # these are temporarily skipped because factors can be round tripped
@@ -41,5 +40,6 @@ DBItest::test_all(c(
   "write_table_row_names_string_missing",
   "write_table_row_names_na_missing",
   "append_roundtrip_factor",
-  "bind_factor"
+  "bind_factor",
+  NULL
 ))

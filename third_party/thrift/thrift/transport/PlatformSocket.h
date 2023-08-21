@@ -19,10 +19,13 @@
 
 // clang-format off
 
-#ifndef _THRIFT_TRANSPORT_PLATFORM_SOCKET_H_
-#  define _THRIFT_TRANSPORT_PLATFORM_SOCKET_H_
+#ifndef _DUCKDB_THRIFT_TRANSPORT_PLATFORM_SOCKET_H_
+#  define _DUCKDB_THRIFT_TRANSPORT_PLATFORM_SOCKET_H_
 
 #ifdef _WIN32
+#ifdef _WINSOCKAPI_
+#undef _WINSOCKAPI_
+#endif
 #  include <winsock2.h>
 #  define THRIFT_GET_SOCKET_ERROR ::WSAGetLastError()
 #  define THRIFT_ERRNO (*_errno())
@@ -131,4 +134,4 @@
 #  define THRIFT_SHUT_RDWR SHUT_RDWR
 #endif
 
-#endif // _THRIFT_TRANSPORT_PLATFORM_SOCKET_H_
+#endif // _DUCKDB_THRIFT_TRANSPORT_PLATFORM_SOCKET_H_

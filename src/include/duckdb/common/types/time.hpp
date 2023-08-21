@@ -14,6 +14,8 @@
 
 namespace duckdb {
 
+struct dtime_t;
+
 //! The Time class is a static class that holds helper functions for the Time
 //! type.
 class Time {
@@ -25,6 +27,8 @@ public:
 
 	//! Convert a time object to a string in the format "hh:mm:ss"
 	DUCKDB_API static string ToString(dtime_t time);
+	//! Convert a UTC offset to ±HH[:MM]
+	DUCKDB_API static string ToUTCOffset(int hour_offset, int minute_offset);
 
 	DUCKDB_API static dtime_t FromTime(int32_t hour, int32_t minute, int32_t second, int32_t microseconds = 0);
 
@@ -34,6 +38,11 @@ public:
 
 	DUCKDB_API static string ConversionError(const string &str);
 	DUCKDB_API static string ConversionError(string_t str);
+
+	DUCKDB_API static dtime_t FromTimeMs(int64_t time_ms);
+	DUCKDB_API static dtime_t FromTimeNs(int64_t time_ns);
+
+	DUCKDB_API static bool IsValidTime(int32_t hour, int32_t minute, int32_t second, int32_t microseconds);
 
 private:
 	static bool TryConvertInternal(const char *buf, idx_t len, idx_t &pos, dtime_t &result, bool strict);

@@ -27,7 +27,7 @@ CopyStmt:	COPY opt_binary qualified_name opt_column_list opt_oids
 						n->options = list_concat(n->options, $11);
 					$$ = (PGNode *)n;
 				}
-			| COPY '(' PreparableStmt ')' TO opt_program copy_file_name opt_with copy_options
+			| COPY '(' SelectStmt ')' TO opt_program copy_file_name opt_with copy_options
 				{
 					PGCopyStmt *n = makeNode(PGCopyStmt);
 					n->relation = NULL;
@@ -103,6 +103,7 @@ copy_generic_opt_arg:
 			| NumericOnly					{ $$ = (PGNode *) $1; }
 			| '*'							{ $$ = (PGNode *) makeNode(PGAStar); }
 			| '(' copy_generic_opt_arg_list ')'		{ $$ = (PGNode *) $2; }
+			| struct_expr					{ $$ = (PGNode *) $1; }
 			| /* EMPTY */					{ $$ = NULL; }
 		;
 
@@ -183,6 +184,14 @@ copy_opt_item:
 			| FORCE QUOTE '*'
 				{
 					$$ = makeDefElem("force_quote", (PGNode *)makeNode(PGAStar), @1);
+				}
+			| PARTITION BY columnList
+				{
+					$$ = makeDefElem("partition_by", (PGNode *)$3, @1);
+				}
+			| PARTITION BY '*'
+				{
+					$$ = makeDefElem("partition_by", (PGNode *)makeNode(PGAStar), @1);
 				}
 			| FORCE NOT NULL_P columnList
 				{

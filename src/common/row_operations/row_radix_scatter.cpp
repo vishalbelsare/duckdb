@@ -6,10 +6,10 @@
 namespace duckdb {
 
 template <class T>
-void TemplatedRadixScatter(VectorData &vdata, const SelectionVector &sel, idx_t add_count, data_ptr_t *key_locations,
-                           const bool desc, const bool has_null, const bool nulls_first, const bool is_little_endian,
+void TemplatedRadixScatter(UnifiedVectorFormat &vdata, const SelectionVector &sel, idx_t add_count,
+                           data_ptr_t *key_locations, const bool desc, const bool has_null, const bool nulls_first,
                            const idx_t offset) {
-	auto source = (T *)vdata.data;
+	auto source = UnifiedVectorFormat::GetData<T>(vdata);
 	if (has_null) {
 		auto &validity = vdata.validity;
 		const data_t valid = nulls_first ? 1 : 0;
@@ -21,7 +21,7 @@ void TemplatedRadixScatter(VectorData &vdata, const SelectionVector &sel, idx_t 
 			// write validity and according value
 			if (validity.RowIsValid(source_idx)) {
 				key_locations[i][0] = valid;
-				EncodeData<T>(key_locations[i] + 1, source[source_idx], is_little_endian);
+				Radix::EncodeData<T>(key_locations[i] + 1, source[source_idx]);
 				// invert bits if desc
 				if (desc) {
 					for (idx_t s = 1; s < sizeof(T) + 1; s++) {
@@ -39,7 +39,7 @@ void TemplatedRadixScatter(VectorData &vdata, const SelectionVector &sel, idx_t 
 			auto idx = sel.get_index(i);
 			auto source_idx = vdata.sel->get_index(idx) + offset;
 			// write value
-			EncodeData<T>(key_locations[i], source[source_idx], is_little_endian);
+			Radix::EncodeData<T>(key_locations[i], source[source_idx]);
 			// invert bits if desc
 			if (desc) {
 				for (idx_t s = 0; s < sizeof(T); s++) {
@@ -51,10 +51,10 @@ void TemplatedRadixScatter(VectorData &vdata, const SelectionVector &sel, idx_t 
 	}
 }
 
-void RadixScatterStringVector(VectorData &vdata, const SelectionVector &sel, idx_t add_count, data_ptr_t *key_locations,
-                              const bool desc, const bool has_null, const bool nulls_first, const idx_t prefix_len,
-                              idx_t offset) {
-	auto source = (string_t *)vdata.data;
+void RadixScatterStringVector(UnifiedVectorFormat &vdata, const SelectionVector &sel, idx_t add_count,
+                              data_ptr_t *key_locations, const bool desc, const bool has_null, const bool nulls_first,
+                              const idx_t prefix_len, idx_t offset) {
+	auto source = UnifiedVectorFormat::GetData<string_t>(vdata);
 	if (has_null) {
 		auto &validity = vdata.validity;
 		const data_t valid = nulls_first ? 1 : 0;
@@ -66,7 +66,7 @@ void RadixScatterStringVector(VectorData &vdata, const SelectionVector &sel, idx
 			// write validity and according value
 			if (validity.RowIsValid(source_idx)) {
 				key_locations[i][0] = valid;
-				EncodeStringDataPrefix(key_locations[i] + 1, source[source_idx], prefix_len);
+				Radix::EncodeStringDataPrefix(key_locations[i] + 1, source[source_idx], prefix_len);
 				// invert bits if desc
 				if (desc) {
 					for (idx_t s = 1; s < prefix_len + 1; s++) {
@@ -84,7 +84,7 @@ void RadixScatterStringVector(VectorData &vdata, const SelectionVector &sel, idx
 			auto idx = sel.get_index(i);
 			auto source_idx = vdata.sel->get_index(idx) + offset;
 			// write value
-			EncodeStringDataPrefix(key_locations[i], source[source_idx], prefix_len);
+			Radix::EncodeStringDataPrefix(key_locations[i], source[source_idx], prefix_len);
 			// invert bits if desc
 			if (desc) {
 				for (idx_t s = 0; s < prefix_len; s++) {
@@ -96,12 +96,13 @@ void RadixScatterStringVector(VectorData &vdata, const SelectionVector &sel, idx
 	}
 }
 
-void RadixScatterListVector(Vector &v, VectorData &vdata, const SelectionVector &sel, idx_t add_count,
+void RadixScatterListVector(Vector &v, UnifiedVectorFormat &vdata, const SelectionVector &sel, idx_t add_count,
                             data_ptr_t *key_locations, const bool desc, const bool has_null, const bool nulls_first,
                             const idx_t prefix_len, const idx_t width, const idx_t offset) {
 	auto list_data = ListVector::GetData(v);
 	auto &child_vector = ListVector::GetEntry(v);
 	auto list_size = ListVector::GetListSize(v);
+	child_vector.Flatten(list_size);
 
 	// serialize null values
 	if (has_null) {
@@ -122,7 +123,7 @@ void RadixScatterListVector(Vector &v, VectorData &vdata, const SelectionVector 
 					// denote that the list is not empty with a 1
 					key_locations[i][0] = 1;
 					key_locations[i]++;
-					RowOperations::RadixScatter(child_vector, list_size, FlatVector::INCREMENTAL_SELECTION_VECTOR, 1,
+					RowOperations::RadixScatter(child_vector, list_size, *FlatVector::IncrementalSelectionVector(), 1,
 					                            key_locations + i, false, true, false, prefix_len, width - 1,
 					                            list_entry.offset);
 				} else {
@@ -153,7 +154,7 @@ void RadixScatterListVector(Vector &v, VectorData &vdata, const SelectionVector 
 				// denote that the list is not empty with a 1
 				key_locations[i][0] = 1;
 				key_locations[i]++;
-				RowOperations::RadixScatter(child_vector, list_size, FlatVector::INCREMENTAL_SELECTION_VECTOR, 1,
+				RowOperations::RadixScatter(child_vector, list_size, *FlatVector::IncrementalSelectionVector(), 1,
 				                            key_locations + i, false, true, false, prefix_len, width - 1,
 				                            list_entry.offset);
 			} else {
@@ -172,9 +173,9 @@ void RadixScatterListVector(Vector &v, VectorData &vdata, const SelectionVector 
 	}
 }
 
-void RadixScatterStructVector(Vector &v, VectorData &vdata, idx_t vcount, const SelectionVector &sel, idx_t add_count,
-                              data_ptr_t *key_locations, const bool desc, const bool has_null, const bool nulls_first,
-                              const idx_t prefix_len, idx_t width, const idx_t offset) {
+void RadixScatterStructVector(Vector &v, UnifiedVectorFormat &vdata, idx_t vcount, const SelectionVector &sel,
+                              idx_t add_count, data_ptr_t *key_locations, const bool desc, const bool has_null,
+                              const bool nulls_first, const idx_t prefix_len, idx_t width, const idx_t offset) {
 	// serialize null values
 	if (has_null) {
 		auto &validity = vdata.validity;
@@ -196,7 +197,7 @@ void RadixScatterStructVector(Vector &v, VectorData &vdata, idx_t vcount, const 
 	}
 	// serialize the struct
 	auto &child_vector = *StructVector::GetEntries(v)[0];
-	RowOperations::RadixScatter(child_vector, vcount, FlatVector::INCREMENTAL_SELECTION_VECTOR, add_count,
+	RowOperations::RadixScatter(child_vector, vcount, *FlatVector::IncrementalSelectionVector(), add_count,
 	                            key_locations, false, true, false, prefix_len, width, offset);
 	// invert bits if desc
 	if (desc) {
@@ -211,59 +212,45 @@ void RadixScatterStructVector(Vector &v, VectorData &vdata, idx_t vcount, const 
 void RowOperations::RadixScatter(Vector &v, idx_t vcount, const SelectionVector &sel, idx_t ser_count,
                                  data_ptr_t *key_locations, bool desc, bool has_null, bool nulls_first,
                                  idx_t prefix_len, idx_t width, idx_t offset) {
-	auto is_little_endian = IsLittleEndian();
-
-	VectorData vdata;
-	v.Orrify(vcount, vdata);
+	UnifiedVectorFormat vdata;
+	v.ToUnifiedFormat(vcount, vdata);
 	switch (v.GetType().InternalType()) {
 	case PhysicalType::BOOL:
 	case PhysicalType::INT8:
-		TemplatedRadixScatter<int8_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
-		                              is_little_endian, offset);
+		TemplatedRadixScatter<int8_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first, offset);
 		break;
 	case PhysicalType::INT16:
-		TemplatedRadixScatter<int16_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
-		                               is_little_endian, offset);
+		TemplatedRadixScatter<int16_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first, offset);
 		break;
 	case PhysicalType::INT32:
-		TemplatedRadixScatter<int32_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
-		                               is_little_endian, offset);
+		TemplatedRadixScatter<int32_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first, offset);
 		break;
 	case PhysicalType::INT64:
-		TemplatedRadixScatter<int64_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
-		                               is_little_endian, offset);
+		TemplatedRadixScatter<int64_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first, offset);
 		break;
 	case PhysicalType::UINT8:
-		TemplatedRadixScatter<uint8_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
-		                               is_little_endian, offset);
+		TemplatedRadixScatter<uint8_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first, offset);
 		break;
 	case PhysicalType::UINT16:
-		TemplatedRadixScatter<uint16_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
-		                                is_little_endian, offset);
+		TemplatedRadixScatter<uint16_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first, offset);
 		break;
 	case PhysicalType::UINT32:
-		TemplatedRadixScatter<uint32_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
-		                                is_little_endian, offset);
+		TemplatedRadixScatter<uint32_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first, offset);
 		break;
 	case PhysicalType::UINT64:
-		TemplatedRadixScatter<uint64_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
-		                                is_little_endian, offset);
+		TemplatedRadixScatter<uint64_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first, offset);
 		break;
 	case PhysicalType::INT128:
-		TemplatedRadixScatter<hugeint_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
-		                                 is_little_endian, offset);
+		TemplatedRadixScatter<hugeint_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first, offset);
 		break;
 	case PhysicalType::FLOAT:
-		TemplatedRadixScatter<float>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
-		                             is_little_endian, offset);
+		TemplatedRadixScatter<float>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first, offset);
 		break;
 	case PhysicalType::DOUBLE:
-		TemplatedRadixScatter<double>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
-		                              is_little_endian, offset);
+		TemplatedRadixScatter<double>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first, offset);
 		break;
 	case PhysicalType::INTERVAL:
-		TemplatedRadixScatter<interval_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
-		                                  is_little_endian, offset);
+		TemplatedRadixScatter<interval_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first, offset);
 		break;
 	case PhysicalType::VARCHAR:
 		RadixScatterStringVector(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first, prefix_len, offset);

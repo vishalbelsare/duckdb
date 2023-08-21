@@ -1,22 +1,35 @@
+//===----------------------------------------------------------------------===//
+//                         DuckDB
+//
+// parquet_rle_bp_decoder.hpp
+//
+//
+//===----------------------------------------------------------------------===//
+
 #pragma once
+#include "parquet_types.h"
+#include "thrift_tools.hpp"
+#include "resizable_buffer.hpp"
+#include "decode_utils.hpp"
+
 namespace duckdb {
+
 class RleBpDecoder {
 public:
 	/// Create a decoder object. buffer/buffer_len is the decoded data.
 	/// bit_width is the width of each value (before encoding).
-	RleBpDecoder(const uint8_t *buffer, uint32_t buffer_len, uint32_t bit_width)
-	    : buffer_((char *)buffer, buffer_len), bit_width_(bit_width), current_value_(0), repeat_count_(0),
-	      literal_count_(0) {
+	RleBpDecoder(data_ptr_t buffer, uint32_t buffer_len, uint32_t bit_width)
+	    : buffer_(buffer, buffer_len), bit_width_(bit_width), current_value_(0), repeat_count_(0), literal_count_(0) {
 		if (bit_width >= 64) {
 			throw std::runtime_error("Decode bit width too large");
 		}
 		byte_encoded_len = ((bit_width_ + 7) / 8);
-		max_val = (1 << bit_width_) - 1;
+		max_val = (uint64_t(1) << bit_width_) - 1;
 	}
 
 	template <typename T>
-	void GetBatch(char *values_target_ptr, uint32_t batch_size) {
-		auto values = (T *)values_target_ptr;
+	void GetBatch(data_ptr_t values_target_ptr, uint32_t batch_size) {
+		auto values = reinterpret_cast<T *>(values_target_ptr);
 		uint32_t values_read = 0;
 
 		while (values_read < batch_size) {
@@ -27,7 +40,8 @@ public:
 				values_read += repeat_batch;
 			} else if (literal_count_ > 0) {
 				uint32_t literal_batch = MinValue(batch_size - values_read, static_cast<uint32_t>(literal_count_));
-				uint32_t actual_read = BitUnpack<T>(values + values_read, literal_batch);
+				uint32_t actual_read = ParquetDecodeUtils::BitUnpack<T>(buffer_, bitpack_pos, values + values_read,
+				                                                        literal_batch, bit_width_);
 				if (literal_batch != actual_read) {
 					throw std::runtime_error("Did not find enough values");
 				}
@@ -47,37 +61,29 @@ public:
 		}
 	}
 
+	static uint8_t ComputeBitWidth(idx_t val) {
+		if (val == 0) {
+			return 0;
+		}
+		uint8_t ret = 1;
+		while (((idx_t)(1u << ret) - 1) < val) {
+			ret++;
+		}
+		return ret;
+	}
+
 private:
 	ByteBuffer buffer_;
 
 	/// Number of bits needed to encode the value. Must be between 0 and 64.
-	int bit_width_;
+	uint32_t bit_width_;
 	uint64_t current_value_;
 	uint32_t repeat_count_;
 	uint32_t literal_count_;
 	uint8_t byte_encoded_len;
-	uint32_t max_val;
+	uint64_t max_val;
 
-	int8_t bitpack_pos = 0;
-
-	// this is slow but whatever, calls are rare
-	uint32_t VarintDecode() {
-		uint32_t result = 0;
-		uint8_t shift = 0;
-		uint8_t len = 0;
-		while (true) {
-			auto byte = buffer_.read<uint8_t>();
-			len++;
-			result |= (byte & 127) << shift;
-			if ((byte & 128) == 0)
-				break;
-			shift += 7;
-			if (shift > 32) {
-				throw std::runtime_error("Varint-decoding found too large number");
-			}
-		}
-		return result;
-	}
+	uint8_t bitpack_pos = 0;
 
 	/// Fills literal_count_ and repeat_count_ with next values. Returns false if there
 	/// are no more.
@@ -89,7 +95,7 @@ private:
 			buffer_.inc(1);
 			bitpack_pos = 0;
 		}
-		auto indicator_value = VarintDecode();
+		auto indicator_value = ParquetDecodeUtils::VarintDecode<uint32_t>(buffer_);
 
 		// lsb indicates if it is a literal run or repeated run
 		bool is_literal = indicator_value & 1;
@@ -109,28 +115,6 @@ private:
 		}
 		// TODO complain if we run out of buffer
 		return true;
-	}
-
-	// somewhat optimized implementation that avoids non-alignment
-
-	static const uint32_t BITPACK_MASKS[];
-	static const uint8_t BITPACK_DLEN;
-
-	template <typename T>
-	uint32_t BitUnpack(T *dest, uint32_t count) {
-		auto mask = BITPACK_MASKS[bit_width_];
-
-		for (uint32_t i = 0; i < count; i++) {
-			T val = (buffer_.get<uint8_t>() >> bitpack_pos) & mask;
-			bitpack_pos += bit_width_;
-			while (bitpack_pos > BITPACK_DLEN) {
-				buffer_.inc(1);
-				val |= (buffer_.get<uint8_t>() << (BITPACK_DLEN - (bitpack_pos - bit_width_))) & mask;
-				bitpack_pos -= BITPACK_DLEN;
-			}
-			dest[i] = val;
-		}
-		return count;
 	}
 };
 } // namespace duckdb

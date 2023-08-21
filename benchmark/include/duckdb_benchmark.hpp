@@ -15,6 +15,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "test_helpers.hpp"
 #include "duckdb/main/query_profiler.hpp"
+#include "duckdb/common/helper.hpp"
 
 namespace duckdb {
 
@@ -22,13 +23,30 @@ namespace duckdb {
 struct DuckDBBenchmarkState : public BenchmarkState {
 	DuckDB db;
 	Connection conn;
-	unique_ptr<QueryResult> result;
+	duckdb::unique_ptr<QueryResult> result;
 
 	DuckDBBenchmarkState(string path) : db(path.empty() ? nullptr : path.c_str()), conn(db) {
-		conn.EnableProfiling();
 		auto &instance = BenchmarkRunner::GetInstance();
 		auto res = conn.Query("PRAGMA threads=" + to_string(instance.threads));
-		D_ASSERT(res->success);
+		D_ASSERT(!res->HasError());
+		string profiling_mode;
+		switch (instance.configuration.profile_info) {
+		case BenchmarkProfileInfo::NONE:
+			profiling_mode = "";
+			break;
+		case BenchmarkProfileInfo::NORMAL:
+			profiling_mode = "standard";
+			break;
+		case BenchmarkProfileInfo::DETAILED:
+			profiling_mode = "detailed";
+			break;
+		default:
+			throw InternalException("Unknown profiling option \"%s\"", instance.configuration.profile_info);
+		}
+		if (!profiling_mode.empty()) {
+			res = conn.Query("PRAGMA profiling_mode=" + profiling_mode);
+			D_ASSERT(!res->HasError());
+		}
 	}
 	virtual ~DuckDBBenchmarkState() {
 	}
@@ -67,14 +85,14 @@ public:
 		}
 	}
 
-	virtual unique_ptr<DuckDBBenchmarkState> CreateBenchmarkState() {
-		return make_unique<DuckDBBenchmarkState>(GetDatabasePath());
+	virtual duckdb::unique_ptr<DuckDBBenchmarkState> CreateBenchmarkState() {
+		return make_uniq<DuckDBBenchmarkState>(GetDatabasePath());
 	}
 
-	unique_ptr<BenchmarkState> Initialize(BenchmarkConfiguration &config) override {
+	duckdb::unique_ptr<BenchmarkState> Initialize(BenchmarkConfiguration &config) override {
 		auto state = CreateBenchmarkState();
 		Load(state.get());
-		return move(state);
+		return std::move(state);
 	}
 
 	void Run(BenchmarkState *state_p) override {
@@ -99,7 +117,8 @@ public:
 
 	string GetLogOutput(BenchmarkState *state_p) override {
 		auto state = (DuckDBBenchmarkState *)state_p;
-		return state->conn.context->profiler->ToJSON();
+		auto &profiler = QueryProfiler::Get(*state->conn.context);
+		return profiler.ToJSON();
 	}
 
 	//! Interrupt the benchmark because of a timeout

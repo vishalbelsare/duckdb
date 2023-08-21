@@ -1,30 +1,72 @@
 #include "duckdb/main/query_profiler.hpp"
-#include "duckdb/common/to_string.hpp"
+
 #include "duckdb/common/fstream.hpp"
+#include "duckdb/common/http_state.hpp"
+#include "duckdb/common/limits.hpp"
 #include "duckdb/common/printer.hpp"
 #include "duckdb/common/string_util.hpp"
-#include "duckdb/execution/physical_operator.hpp"
-#include "duckdb/execution/operator/join/physical_delim_join.hpp"
-#include "duckdb/execution/operator/helper/physical_execute.hpp"
+#include "duckdb/common/to_string.hpp"
 #include "duckdb/common/tree_renderer.hpp"
-#include "duckdb/parser/sql_statement.hpp"
-#include "duckdb/common/limits.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/execution/operator/helper/physical_execute.hpp"
+#include "duckdb/execution/operator/join/physical_delim_join.hpp"
+#include "duckdb/execution/physical_operator.hpp"
+#include "duckdb/main/client_config.hpp"
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/client_data.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
-#include <utility>
+
 #include <algorithm>
+#include <utility>
 
 namespace duckdb {
 
-void QueryProfiler::StartQuery(string query, bool is_explain_analyze) {
+QueryProfiler::QueryProfiler(ClientContext &context_p)
+    : context(context_p), running(false), query_requires_profiling(false), is_explain_analyze(false) {
+}
+
+bool QueryProfiler::IsEnabled() const {
+	return is_explain_analyze ? true : ClientConfig::GetConfig(context).enable_profiler;
+}
+
+bool QueryProfiler::IsDetailedEnabled() const {
+	return is_explain_analyze ? false : ClientConfig::GetConfig(context).enable_detailed_profiling;
+}
+
+ProfilerPrintFormat QueryProfiler::GetPrintFormat() const {
+	return ClientConfig::GetConfig(context).profiler_print_format;
+}
+
+bool QueryProfiler::PrintOptimizerOutput() const {
+	return GetPrintFormat() == ProfilerPrintFormat::QUERY_TREE_OPTIMIZER || IsDetailedEnabled();
+}
+
+string QueryProfiler::GetSaveLocation() const {
+	return is_explain_analyze ? string() : ClientConfig::GetConfig(context).profiler_save_location;
+}
+
+QueryProfiler &QueryProfiler::Get(ClientContext &context) {
+	return *ClientData::Get(context).profiler;
+}
+
+void QueryProfiler::StartQuery(string query, bool is_explain_analyze, bool start_at_optimizer) {
 	if (is_explain_analyze) {
 		StartExplainAnalyze();
 	}
-	if (!enabled) {
+	if (!IsEnabled()) {
+		return;
+	}
+	if (start_at_optimizer && !PrintOptimizerOutput()) {
+		// This is the StartQuery call before the optimizer, but we don't have to print optimizer output
+		return;
+	}
+	if (running) {
+		// Called while already running: this should only happen when we print optimizer output
+		D_ASSERT(PrintOptimizerOutput());
 		return;
 	}
 	this->running = true;
-	this->query = move(query);
+	this->query = std::move(query);
 	tree_map.clear();
 	root = nullptr;
 	phase_timings.clear();
@@ -39,10 +81,12 @@ bool QueryProfiler::OperatorRequiresProfiling(PhysicalOperatorType op_type) {
 	case PhysicalOperatorType::RESERVOIR_SAMPLE:
 	case PhysicalOperatorType::STREAMING_SAMPLE:
 	case PhysicalOperatorType::LIMIT:
+	case PhysicalOperatorType::LIMIT_PERCENT:
+	case PhysicalOperatorType::STREAMING_LIMIT:
 	case PhysicalOperatorType::TOP_N:
 	case PhysicalOperatorType::WINDOW:
 	case PhysicalOperatorType::UNNEST:
-	case PhysicalOperatorType::SIMPLE_AGGREGATE:
+	case PhysicalOperatorType::UNGROUPED_AGGREGATE:
 	case PhysicalOperatorType::HASH_GROUP_BY:
 	case PhysicalOperatorType::FILTER:
 	case PhysicalOperatorType::PROJECTION:
@@ -56,6 +100,7 @@ bool QueryProfiler::OperatorRequiresProfiling(PhysicalOperatorType op_type) {
 	case PhysicalOperatorType::HASH_JOIN:
 	case PhysicalOperatorType::CROSS_PRODUCT:
 	case PhysicalOperatorType::PIECEWISE_MERGE_JOIN:
+	case PhysicalOperatorType::IE_JOIN:
 	case PhysicalOperatorType::DELIM_JOIN:
 	case PhysicalOperatorType::UNION:
 	case PhysicalOperatorType::RECURSIVE_CTE:
@@ -77,17 +122,11 @@ void QueryProfiler::Finalize(TreeNode &node) {
 
 void QueryProfiler::StartExplainAnalyze() {
 	this->is_explain_analyze = true;
-	this->stored_enabled = enabled;
-	this->stored_automatic_print_format = automatic_print_format;
-	this->stored_save_location = save_location;
-
-	this->enabled = true;
-	this->save_location = string();
-	this->automatic_print_format = ProfilerPrintFormat::NONE;
 }
 
 void QueryProfiler::EndQuery() {
-	if (!enabled || !running) {
+	lock_guard<mutex> guard(flush_lock);
+	if (!IsEnabled() || !running) {
 		return;
 	}
 
@@ -96,35 +135,37 @@ void QueryProfiler::EndQuery() {
 		Finalize(*root);
 	}
 	this->running = false;
-	// print or output the query profiling after termination, if this is enabled
-	if (automatic_print_format != ProfilerPrintFormat::NONE) {
-		// check if this query should be output based on the operator types
-		string query_info;
-		if (automatic_print_format == ProfilerPrintFormat::JSON) {
-			query_info = ToJSON();
-		} else if (automatic_print_format == ProfilerPrintFormat::QUERY_TREE) {
-			query_info = ToString();
-		} else if (automatic_print_format == ProfilerPrintFormat::QUERY_TREE_OPTIMIZER) {
-			query_info = ToString(true);
-		}
-
-		if (save_location.empty()) {
+	// print or output the query profiling after termination
+	// EXPLAIN ANALYSE should not be outputted by the profiler
+	if (IsEnabled() && !is_explain_analyze) {
+		string query_info = ToString();
+		auto save_location = GetSaveLocation();
+		if (!ClientConfig::GetConfig(context).emit_profiler_output) {
+			// disable output
+		} else if (save_location.empty()) {
 			Printer::Print(query_info);
 			Printer::Print("\n");
 		} else {
 			WriteToFile(save_location.c_str(), query_info);
 		}
 	}
-	if (is_explain_analyze) {
-		this->is_explain_analyze = false;
-		this->enabled = stored_enabled;
-		this->automatic_print_format = stored_automatic_print_format;
-		this->save_location = stored_save_location;
+	this->is_explain_analyze = false;
+}
+string QueryProfiler::ToString() const {
+	const auto format = GetPrintFormat();
+	switch (format) {
+	case ProfilerPrintFormat::QUERY_TREE:
+	case ProfilerPrintFormat::QUERY_TREE_OPTIMIZER:
+		return QueryTreeToString();
+	case ProfilerPrintFormat::JSON:
+		return ToJSON();
+	default:
+		throw InternalException("Unknown ProfilerPrintFormat \"%s\"", format);
 	}
 }
 
 void QueryProfiler::StartPhase(string new_phase) {
-	if (!enabled || !running) {
+	if (!IsEnabled() || !running) {
 		return;
 	}
 
@@ -148,7 +189,7 @@ void QueryProfiler::StartPhase(string new_phase) {
 }
 
 void QueryProfiler::EndPhase() {
-	if (!enabled || !running) {
+	if (!IsEnabled() || !running) {
 		return;
 	}
 	D_ASSERT(phase_stack.size() > 0);
@@ -167,8 +208,8 @@ void QueryProfiler::EndPhase() {
 	}
 }
 
-void QueryProfiler::Initialize(PhysicalOperator *root_op) {
-	if (!enabled || !running) {
+void QueryProfiler::Initialize(const PhysicalOperator &root_op) {
+	if (!IsEnabled() || !running) {
 		return;
 	}
 	this->query_requires_profiling = false;
@@ -186,7 +227,7 @@ void QueryProfiler::Initialize(PhysicalOperator *root_op) {
 OperatorProfiler::OperatorProfiler(bool enabled_p) : enabled(enabled_p), active_operator(nullptr) {
 }
 
-void OperatorProfiler::StartOperator(const PhysicalOperator *phys_op) {
+void OperatorProfiler::StartOperator(optional_ptr<const PhysicalOperator> phys_op) {
 	if (!enabled) {
 		return;
 	}
@@ -201,7 +242,7 @@ void OperatorProfiler::StartOperator(const PhysicalOperator *phys_op) {
 	op.Start();
 }
 
-void OperatorProfiler::EndOperator(DataChunk *chunk) {
+void OperatorProfiler::EndOperator(optional_ptr<DataChunk> chunk) {
 	if (!enabled) {
 		return;
 	}
@@ -213,15 +254,15 @@ void OperatorProfiler::EndOperator(DataChunk *chunk) {
 	// finish timing for the current element
 	op.End();
 
-	AddTiming(active_operator, op.Elapsed(), chunk ? chunk->size() : 0);
+	AddTiming(*active_operator, op.Elapsed(), chunk ? chunk->size() : 0);
 	active_operator = nullptr;
 }
 
-void OperatorProfiler::AddTiming(const PhysicalOperator *op, double time, idx_t elements) {
+void OperatorProfiler::AddTiming(const PhysicalOperator &op, double time, idx_t elements) {
 	if (!enabled) {
 		return;
 	}
-	if (!Value::DoubleIsValid(time)) {
+	if (!Value::DoubleIsFinite(time)) {
 		return;
 	}
 	auto entry = timings.find(op);
@@ -234,7 +275,7 @@ void OperatorProfiler::AddTiming(const PhysicalOperator *op, double time, idx_t 
 		entry->second.elements += elements;
 	}
 }
-void OperatorProfiler::Flush(const PhysicalOperator *phys_op, ExpressionExecutor *expression_executor,
+void OperatorProfiler::Flush(const PhysicalOperator &phys_op, ExpressionExecutor &expression_executor,
                              const string &name, int id) {
 	auto entry = timings.find(phys_op);
 	if (entry == timings.end()) {
@@ -244,22 +285,24 @@ void OperatorProfiler::Flush(const PhysicalOperator *phys_op, ExpressionExecutor
 	if (int(operator_timing.executors_info.size()) <= id) {
 		operator_timing.executors_info.resize(id + 1);
 	}
-	operator_timing.executors_info[id] = make_unique<ExpressionExecutorInfo>(*expression_executor, name, id);
-	operator_timing.name = phys_op->GetName();
+	operator_timing.executors_info[id] = make_uniq<ExpressionExecutorInfo>(expression_executor, name, id);
+	operator_timing.name = phys_op.GetName();
 }
 
 void QueryProfiler::Flush(OperatorProfiler &profiler) {
-	if (!enabled || !running) {
+	lock_guard<mutex> guard(flush_lock);
+	if (!IsEnabled() || !running) {
 		return;
 	}
-	lock_guard<mutex> guard(flush_lock);
 	for (auto &node : profiler.timings) {
-		auto entry = tree_map.find(node.first);
+		auto &op = node.first.get();
+		auto entry = tree_map.find(op);
 		D_ASSERT(entry != tree_map.end());
+		auto &tree_node = entry->second.get();
 
-		entry->second->info.time += node.second.time;
-		entry->second->info.elements += node.second.elements;
-		if (!detailed_enabled) {
+		tree_node.info.time += node.second.time;
+		tree_node.info.elements += node.second.elements;
+		if (!IsDetailedEnabled()) {
 			continue;
 		}
 		for (auto &info : node.second.executors_info) {
@@ -267,10 +310,10 @@ void QueryProfiler::Flush(OperatorProfiler &profiler) {
 				continue;
 			}
 			auto info_id = info->id;
-			if (int(entry->second->info.executors_info.size()) <= info_id) {
-				entry->second->info.executors_info.resize(info_id + 1);
+			if (int32_t(tree_node.info.executors_info.size()) <= info_id) {
+				tree_node.info.executors_info.resize(info_id + 1);
 			}
-			entry->second->info.executors_info[info_id] = move(info);
+			tree_node.info.executors_info[info_id] = std::move(info);
 		}
 	}
 	profiler.timings.clear();
@@ -313,14 +356,14 @@ static string RenderTiming(double timing) {
 	return timing_s + "s";
 }
 
-string QueryProfiler::ToString(bool print_optimizer_output) const {
+string QueryProfiler::QueryTreeToString() const {
 	std::stringstream str;
-	ToStream(str, print_optimizer_output);
+	QueryTreeToStream(str);
 	return str.str();
 }
 
-void QueryProfiler::ToStream(std::ostream &ss, bool print_optimizer_output) const {
-	if (!enabled) {
+void QueryProfiler::QueryTreeToStream(std::ostream &ss) const {
+	if (!IsEnabled()) {
 		ss << "Query profiling is disabled. Call "
 		      "Connection::EnableProfiling() to enable profiling!";
 		return;
@@ -331,8 +374,36 @@ void QueryProfiler::ToStream(std::ostream &ss, bool print_optimizer_output) cons
 	ss << "│└───────────────────────────────────┘│\n";
 	ss << "└─────────────────────────────────────┘\n";
 	ss << StringUtil::Replace(query, "\n", " ") + "\n";
-	if (query.empty()) {
+
+	// checking the tree to ensure the query is really empty
+	// the query string is empty when a logical plan is deserialized
+	if (query.empty() && !root) {
 		return;
+	}
+
+	if (context.client_data->http_state && !context.client_data->http_state->IsEmpty()) {
+		string read =
+		    "in: " + StringUtil::BytesToHumanReadableString(context.client_data->http_state->total_bytes_received);
+		string written =
+		    "out: " + StringUtil::BytesToHumanReadableString(context.client_data->http_state->total_bytes_sent);
+		string head = "#HEAD: " + to_string(context.client_data->http_state->head_count);
+		string get = "#GET: " + to_string(context.client_data->http_state->get_count);
+		string put = "#PUT: " + to_string(context.client_data->http_state->put_count);
+		string post = "#POST: " + to_string(context.client_data->http_state->post_count);
+
+		constexpr idx_t TOTAL_BOX_WIDTH = 39;
+		ss << "┌─────────────────────────────────────┐\n";
+		ss << "│┌───────────────────────────────────┐│\n";
+		ss << "││            HTTP Stats:            ││\n";
+		ss << "││                                   ││\n";
+		ss << "││" + DrawPadded(read, TOTAL_BOX_WIDTH - 4) + "││\n";
+		ss << "││" + DrawPadded(written, TOTAL_BOX_WIDTH - 4) + "││\n";
+		ss << "││" + DrawPadded(head, TOTAL_BOX_WIDTH - 4) + "││\n";
+		ss << "││" + DrawPadded(get, TOTAL_BOX_WIDTH - 4) + "││\n";
+		ss << "││" + DrawPadded(put, TOTAL_BOX_WIDTH - 4) + "││\n";
+		ss << "││" + DrawPadded(post, TOTAL_BOX_WIDTH - 4) + "││\n";
+		ss << "│└───────────────────────────────────┘│\n";
+		ss << "└─────────────────────────────────────┘\n";
 	}
 
 	constexpr idx_t TOTAL_BOX_WIDTH = 39;
@@ -343,7 +414,7 @@ void QueryProfiler::ToStream(std::ostream &ss, bool print_optimizer_output) cons
 	ss << "│└───────────────────────────────────┘│\n";
 	ss << "└─────────────────────────────────────┘\n";
 	// print phase timings
-	if (print_optimizer_output) {
+	if (PrintOptimizerOutput()) {
 		bool has_previous_phase = false;
 		for (const auto &entry : GetOrderedPhaseTimings()) {
 			if (!StringUtil::Contains(entry.first, " > ")) {
@@ -434,10 +505,9 @@ static void PrintRow(std::ostream &ss, const string &annotation, int id, const s
 
 static void ExtractFunctions(std::ostream &ss, ExpressionInfo &info, int &fun_id, int depth) {
 	if (info.hasfunction) {
-		D_ASSERT(info.sample_tuples_count != 0);
-		PrintRow(ss, "Function", fun_id++, info.function_name,
-		         int(info.function_time) / double(info.sample_tuples_count), info.sample_tuples_count,
-		         info.tuples_count, "", depth);
+		double time = info.sample_tuples_count == 0 ? 0 : int(info.function_time) / double(info.sample_tuples_count);
+		PrintRow(ss, "Function", fun_id++, info.function_name, time, info.sample_tuples_count, info.tuples_count, "",
+		         depth);
 	}
 	if (info.children.empty()) {
 		return;
@@ -464,10 +534,11 @@ static void ToJSONRecursive(QueryProfiler::TreeNode &node, std::ostream &ss, int
 			continue;
 		}
 		for (auto &expr_timer : expr_executor->roots) {
-			D_ASSERT(expr_timer->sample_tuples_count != 0);
-			PrintRow(ss, "ExpressionRoot", expression_counter++, expr_timer->name,
-			         int(expr_timer->time) / double(expr_timer->sample_tuples_count), expr_timer->sample_tuples_count,
-			         expr_timer->tuples_count, expr_timer->extra_info, depth + 1);
+			double time = expr_timer->sample_tuples_count == 0
+			                  ? 0
+			                  : double(expr_timer->time) / double(expr_timer->sample_tuples_count);
+			PrintRow(ss, "ExpressionRoot", expression_counter++, expr_timer->name, time,
+			         expr_timer->sample_tuples_count, expr_timer->tuples_count, expr_timer->extra_info, depth + 1);
 			// Extract all functions inside the tree
 			ExtractFunctions(ss, *expr_timer->root, function_counter, depth + 1);
 		}
@@ -491,10 +562,10 @@ static void ToJSONRecursive(QueryProfiler::TreeNode &node, std::ostream &ss, int
 }
 
 string QueryProfiler::ToJSON() const {
-	if (!enabled) {
+	if (!IsEnabled()) {
 		return "{ \"result\": \"disabled\" }\n";
 	}
-	if (query.empty()) {
+	if (query.empty() && !root) {
 		return "{ \"result\": \"empty\" }\n";
 	}
 	if (!root) {
@@ -541,37 +612,20 @@ void QueryProfiler::WriteToFile(const char *path, string &info) const {
 	}
 }
 
-unique_ptr<QueryProfiler::TreeNode> QueryProfiler::CreateTree(PhysicalOperator *root, idx_t depth) {
-	if (OperatorRequiresProfiling(root->type)) {
+unique_ptr<QueryProfiler::TreeNode> QueryProfiler::CreateTree(const PhysicalOperator &root, idx_t depth) {
+	if (OperatorRequiresProfiling(root.type)) {
 		this->query_requires_profiling = true;
 	}
-	auto node = make_unique<QueryProfiler::TreeNode>();
-	node->type = root->type;
-	node->name = root->GetName();
-	node->extra_info = root->ParamsToString();
+	auto node = make_uniq<QueryProfiler::TreeNode>();
+	node->type = root.type;
+	node->name = root.GetName();
+	node->extra_info = root.ParamsToString();
 	node->depth = depth;
-	tree_map[root] = node.get();
-	for (auto &child : root->children) {
+	tree_map.insert(make_pair(reference<const PhysicalOperator>(root), reference<QueryProfiler::TreeNode>(*node)));
+	auto children = root.GetChildren();
+	for (auto &child : children) {
 		auto child_node = CreateTree(child.get(), depth + 1);
-		node->children.push_back(move(child_node));
-	}
-	switch (root->type) {
-	case PhysicalOperatorType::DELIM_JOIN: {
-		auto &delim_join = (PhysicalDelimJoin &)*root;
-		auto child_node = CreateTree((PhysicalOperator *)delim_join.join.get(), depth + 1);
-		node->children.push_back(move(child_node));
-		child_node = CreateTree((PhysicalOperator *)delim_join.distinct.get(), depth + 1);
-		node->children.push_back(move(child_node));
-		break;
-	}
-	case PhysicalOperatorType::EXECUTE: {
-		auto &execute = (PhysicalExecute &)*root;
-		auto child_node = CreateTree((PhysicalOperator *)execute.plan, depth + 1);
-		node->children.push_back(move(child_node));
-		break;
-	}
-	default:
-		break;
+		node->children.push_back(std::move(child_node));
 	}
 	return node;
 }
@@ -587,7 +641,7 @@ void QueryProfiler::Render(const QueryProfiler::TreeNode &node, std::ostream &ss
 }
 
 void QueryProfiler::Print() {
-	Printer::Print(ToString());
+	Printer::Print(QueryTreeToString());
 }
 
 vector<QueryProfiler::PhaseTimingItem> QueryProfiler::GetOrderedPhaseTimings() const {
@@ -606,10 +660,6 @@ vector<QueryProfiler::PhaseTimingItem> QueryProfiler::GetOrderedPhaseTimings() c
 	return result;
 }
 void QueryProfiler::Propagate(QueryProfiler &qp) {
-	this->automatic_print_format = qp.automatic_print_format;
-	this->save_location = qp.save_location;
-	this->enabled = qp.enabled;
-	this->detailed_enabled = qp.detailed_enabled;
 }
 
 void ExpressionInfo::ExtractExpressionsRecursive(unique_ptr<ExpressionState> &state) {
@@ -618,16 +668,16 @@ void ExpressionInfo::ExtractExpressionsRecursive(unique_ptr<ExpressionState> &st
 	}
 	// extract the children of this node
 	for (auto &child : state->child_states) {
-		auto expr_info = make_unique<ExpressionInfo>();
+		auto expr_info = make_uniq<ExpressionInfo>();
 		if (child->expr.expression_class == ExpressionClass::BOUND_FUNCTION) {
 			expr_info->hasfunction = true;
-			expr_info->function_name = ((BoundFunctionExpression &)child->expr).function.ToString();
+			expr_info->function_name = child->expr.Cast<BoundFunctionExpression>().function.ToString();
 			expr_info->function_time = child->profiler.time;
 			expr_info->sample_tuples_count = child->profiler.sample_tuples_count;
 			expr_info->tuples_count = child->profiler.tuples_count;
 		}
 		expr_info->ExtractExpressionsRecursive(child);
-		children.push_back(move(expr_info));
+		children.push_back(std::move(expr_info));
 	}
 	return;
 }
@@ -635,26 +685,26 @@ void ExpressionInfo::ExtractExpressionsRecursive(unique_ptr<ExpressionState> &st
 ExpressionExecutorInfo::ExpressionExecutorInfo(ExpressionExecutor &executor, const string &name, int id) : id(id) {
 	// Extract Expression Root Information from ExpressionExecutorStats
 	for (auto &state : executor.GetStates()) {
-		roots.push_back(make_unique<ExpressionRootInfo>(*state, name));
+		roots.push_back(make_uniq<ExpressionRootInfo>(*state, name));
 	}
 }
 
 ExpressionRootInfo::ExpressionRootInfo(ExpressionExecutorState &state, string name)
     : current_count(state.profiler.current_count), sample_count(state.profiler.sample_count),
       sample_tuples_count(state.profiler.sample_tuples_count), tuples_count(state.profiler.tuples_count),
-      name(state.name), time(state.profiler.time) {
+      name("expression"), time(state.profiler.time) {
 	// Use the name of expression-tree as extra-info
-	extra_info = move(name);
-	auto expression_info_p = make_unique<ExpressionInfo>();
+	extra_info = std::move(name);
+	auto expression_info_p = make_uniq<ExpressionInfo>();
 	// Maybe root has a function
 	if (state.root_state->expr.expression_class == ExpressionClass::BOUND_FUNCTION) {
 		expression_info_p->hasfunction = true;
-		expression_info_p->function_name = ((BoundFunctionExpression &)state.root_state->expr).function.name;
+		expression_info_p->function_name = (state.root_state->expr.Cast<BoundFunctionExpression>()).function.name;
 		expression_info_p->function_time = state.root_state->profiler.time;
 		expression_info_p->sample_tuples_count = state.root_state->profiler.sample_tuples_count;
 		expression_info_p->tuples_count = state.root_state->profiler.tuples_count;
 	}
 	expression_info_p->ExtractExpressionsRecursive(state.root_state);
-	root = move(expression_info_p);
+	root = std::move(expression_info_p);
 }
 } // namespace duckdb

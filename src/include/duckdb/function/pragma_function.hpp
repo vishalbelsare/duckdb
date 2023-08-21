@@ -31,22 +31,23 @@ typedef void (*pragma_function_t)(ClientContext &context, const FunctionParamete
 class PragmaFunction : public SimpleNamedParameterFunction {
 public:
 	// Call
-	static PragmaFunction PragmaCall(const string &name, pragma_query_t query, vector<LogicalType> arguments,
-	                                 LogicalType varargs = LogicalType::INVALID);
-	static PragmaFunction PragmaCall(const string &name, pragma_function_t function, vector<LogicalType> arguments,
-	                                 LogicalType varargs = LogicalType::INVALID);
+	DUCKDB_API static PragmaFunction PragmaCall(const string &name, pragma_query_t query, vector<LogicalType> arguments,
+	                                            LogicalType varargs = LogicalType::INVALID);
+	DUCKDB_API static PragmaFunction PragmaCall(const string &name, pragma_function_t function,
+	                                            vector<LogicalType> arguments,
+	                                            LogicalType varargs = LogicalType::INVALID);
 	// Statement
-	static PragmaFunction PragmaStatement(const string &name, pragma_query_t query);
-	static PragmaFunction PragmaStatement(const string &name, pragma_function_t function);
+	DUCKDB_API static PragmaFunction PragmaStatement(const string &name, pragma_query_t query);
+	DUCKDB_API static PragmaFunction PragmaStatement(const string &name, pragma_function_t function);
 
-	string ToString() override;
+	DUCKDB_API string ToString() const override;
 
 public:
 	PragmaType type;
 
 	pragma_query_t query;
 	pragma_function_t function;
-	unordered_map<string, LogicalType> named_parameters;
+	named_parameter_type_map_t named_parameters;
 
 private:
 	PragmaFunction(string name, PragmaType pragma_type, pragma_query_t query, pragma_function_t function,

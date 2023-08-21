@@ -1,4 +1,4 @@
-# name: benchmark/tpch/topn/lineitem_topn.benchmark
+# name: benchmark/tpch/topn/lineitem_date_topn_small_payload.benchmark
 # description: Top-N over lineitem (over a single date)
 # group: [topn]
 
@@ -8,7 +8,7 @@ subgroup tpch
 
 require tpch
 
-cache tpch_sf1
+cache tpch_sf1.duckdb
 
 load
 CALL dbgen(sf=1);

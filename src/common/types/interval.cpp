@@ -8,6 +8,7 @@
 #include "duckdb/common/types/cast_helpers.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/multiply.hpp"
+#include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/common/string_util.hpp"
 
 namespace duckdb {
@@ -110,11 +111,14 @@ interval_parse_time : {
 	// parse the remainder of the time as a Time type
 	dtime_t time;
 	idx_t pos;
-	if (!Time::TryConvertTime(str + start_pos, len, pos, time)) {
+	if (!Time::TryConvertTime(str + start_pos, len - start_pos, pos, time)) {
 		return false;
 	}
 	result.micros += time.micros;
 	found_any = true;
+	if (negative) {
+		result.micros = -result.micros;
+	}
 	goto end_of_string;
 }
 interval_parse_identifier:
@@ -285,6 +289,7 @@ int64_t Interval::GetNanoseconds(const interval_t &val) {
 }
 
 interval_t Interval::GetAge(timestamp_t timestamp_1, timestamp_t timestamp_2) {
+	D_ASSERT(Timestamp::IsFinite(timestamp_1) && Timestamp::IsFinite(timestamp_2));
 	date_t date1, date2;
 	dtime_t time1, time2;
 
@@ -374,9 +379,15 @@ interval_t Interval::GetAge(timestamp_t timestamp_1, timestamp_t timestamp_2) {
 }
 
 interval_t Interval::GetDifference(timestamp_t timestamp_1, timestamp_t timestamp_2) {
+	if (!Timestamp::IsFinite(timestamp_1) || !Timestamp::IsFinite(timestamp_2)) {
+		throw InvalidInputException("Cannot subtract infinite timestamps");
+	}
 	const auto us_1 = Timestamp::GetEpochMicroSeconds(timestamp_1);
 	const auto us_2 = Timestamp::GetEpochMicroSeconds(timestamp_2);
-	const auto delta_us = us_1 - us_2;
+	int64_t delta_us;
+	if (!TrySubtractOperator::Operation(us_1, us_2, delta_us)) {
+		throw ConversionException("Timestamp difference is out of bounds");
+	}
 	return FromMicro(delta_us);
 }
 
@@ -389,48 +400,17 @@ interval_t Interval::FromMicro(int64_t delta_us) {
 	return result;
 }
 
-static void NormalizeIntervalEntries(interval_t input, int64_t &months, int64_t &days, int64_t &micros) {
-	int64_t extra_months_d = input.days / Interval::DAYS_PER_MONTH;
-	int64_t extra_months_micros = input.micros / Interval::MICROS_PER_MONTH;
-	input.days -= extra_months_d * Interval::DAYS_PER_MONTH;
-	input.micros -= extra_months_micros * Interval::MICROS_PER_MONTH;
-
-	int64_t extra_days_micros = input.micros / Interval::MICROS_PER_DAY;
-	input.micros -= extra_days_micros * Interval::MICROS_PER_DAY;
-
-	months = input.months + extra_months_d + extra_months_micros;
-	days = input.days + extra_days_micros;
-	micros = input.micros;
-}
-
-bool Interval::Equals(interval_t left, interval_t right) {
-	return left.months == right.months && left.days == right.days && left.micros == right.micros;
-}
-
-bool Interval::GreaterThan(interval_t left, interval_t right) {
-	int64_t lmonths, ldays, lmicros;
-	int64_t rmonths, rdays, rmicros;
-	NormalizeIntervalEntries(left, lmonths, ldays, lmicros);
-	NormalizeIntervalEntries(right, rmonths, rdays, rmicros);
-
-	if (lmonths > rmonths) {
-		return true;
-	} else if (lmonths < rmonths) {
-		return false;
-	}
-	if (ldays > rdays) {
-		return true;
-	} else if (ldays < rdays) {
-		return false;
-	}
-	return lmicros > rmicros;
-}
-
-bool Interval::GreaterThanEquals(interval_t left, interval_t right) {
-	return GreaterThan(left, right) || Equals(left, right);
+interval_t Interval::Invert(interval_t interval) {
+	interval.days = -interval.days;
+	interval.micros = -interval.micros;
+	interval.months = -interval.months;
+	return interval;
 }
 
 date_t Interval::Add(date_t left, interval_t right) {
+	if (!Date::IsFinite(left)) {
+		return left;
+	}
 	date_t result;
 	if (right.months != 0) {
 		int32_t year, month, day;
@@ -460,6 +440,9 @@ date_t Interval::Add(date_t left, interval_t right) {
 			throw OutOfRangeException("Date out of range");
 		}
 	}
+	if (!Date::IsFinite(result)) {
+		throw OutOfRangeException("Date out of range");
+	}
 	return result;
 }
 
@@ -474,6 +457,18 @@ dtime_t Interval::Add(dtime_t left, interval_t right, date_t &date) {
 		date.days--;
 	}
 	return left;
+}
+
+timestamp_t Interval::Add(timestamp_t left, interval_t right) {
+	if (!Timestamp::IsFinite(left)) {
+		return left;
+	}
+	date_t date;
+	dtime_t time;
+	Timestamp::Convert(left, date, time);
+	auto new_date = Interval::Add(date, right);
+	auto new_time = Interval::Add(time, right, new_date);
+	return Timestamp::FromDatetime(new_date, new_time);
 }
 
 } // namespace duckdb

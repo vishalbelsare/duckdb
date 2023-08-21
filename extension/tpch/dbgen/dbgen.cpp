@@ -6,13 +6,11 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/parser/column_definition.hpp"
-#include "duckdb/storage/data_table.hpp"
-#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
-#include "duckdb/planner/parsed_data/bound_create_table_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 #include "duckdb/parser/constraints/not_null_constraint.hpp"
 #include "duckdb/catalog/catalog.hpp"
-#include "duckdb/planner/binder.hpp"
+#include "duckdb/main/appender.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #endif
 
 #define DECLARER /* EXTERN references get defined here */
@@ -21,148 +19,31 @@
 #include "dbgen/dsstypes.h"
 
 #include <cassert>
+#include <cmath>
 #include <mutex>
 
 using namespace duckdb;
 
-seed_t DBGenGlobals::Seed[MAX_STREAM + 1] = {
-    {PART, 1, 0, 1},                           /* P_MFG_SD     0 */
-    {PART, 46831694, 0, 1},                    /* P_BRND_SD    1 */
-    {PART, 1841581359, 0, 1},                  /* P_TYPE_SD    2 */
-    {PART, 1193163244, 0, 1},                  /* P_SIZE_SD    3 */
-    {PART, 727633698, 0, 1},                   /* P_CNTR_SD    4 */
-    {NONE, 933588178, 0, 1},                   /* text pregeneration  5 */
-    {PART, 804159733, 0, 2},                   /* P_CMNT_SD    6 */
-    {PSUPP, 1671059989, 0, SUPP_PER_PART},     /* PS_QTY_SD    7 */
-    {PSUPP, 1051288424, 0, SUPP_PER_PART},     /* PS_SCST_SD   8 */
-    {PSUPP, 1961692154, 0, SUPP_PER_PART * 2}, /* PS_CMNT_SD   9 */
-    {ORDER, 1227283347, 0, 1},                 /* O_SUPP_SD    10 */
-    {ORDER, 1171034773, 0, 1},                 /* O_CLRK_SD    11 */
-    {ORDER, 276090261, 0, 2},                  /* O_CMNT_SD    12 */
-    {ORDER, 1066728069, 0, 1},                 /* O_ODATE_SD   13 */
-    {LINE, 209208115, 0, O_LCNT_MAX},          /* L_QTY_SD     14 */
-    {LINE, 554590007, 0, O_LCNT_MAX},          /* L_DCNT_SD    15 */
-    {LINE, 721958466, 0, O_LCNT_MAX},          /* L_TAX_SD     16 */
-    {LINE, 1371272478, 0, O_LCNT_MAX},         /* L_SHIP_SD    17 */
-    {LINE, 675466456, 0, O_LCNT_MAX},          /* L_SMODE_SD   18 */
-    {LINE, 1808217256, 0, O_LCNT_MAX},         /* L_PKEY_SD    19 */
-    {LINE, 2095021727, 0, O_LCNT_MAX},         /* L_SKEY_SD    20 */
-    {LINE, 1769349045, 0, O_LCNT_MAX},         /* L_SDTE_SD    21 */
-    {LINE, 904914315, 0, O_LCNT_MAX},          /* L_CDTE_SD    22 */
-    {LINE, 373135028, 0, O_LCNT_MAX},          /* L_RDTE_SD    23 */
-    {LINE, 717419739, 0, O_LCNT_MAX},          /* L_RFLG_SD    24 */
-    {LINE, 1095462486, 0, O_LCNT_MAX * 2},     /* L_CMNT_SD    25 */
-    {CUST, 881155353, 0, 9},                   /* C_ADDR_SD    26 */
-    {CUST, 1489529863, 0, 1},                  /* C_NTRG_SD    27 */
-    {CUST, 1521138112, 0, 3},                  /* C_PHNE_SD    28 */
-    {CUST, 298370230, 0, 1},                   /* C_ABAL_SD    29 */
-    {CUST, 1140279430, 0, 1},                  /* C_MSEG_SD    30 */
-    {CUST, 1335826707, 0, 2},                  /* C_CMNT_SD    31 */
-    {SUPP, 706178559, 0, 9},                   /* S_ADDR_SD    32 */
-    {SUPP, 110356601, 0, 1},                   /* S_NTRG_SD    33 */
-    {SUPP, 884434366, 0, 3},                   /* S_PHNE_SD    34 */
-    {SUPP, 962338209, 0, 1},                   /* S_ABAL_SD    35 */
-    {SUPP, 1341315363, 0, 2},                  /* S_CMNT_SD    36 */
-    {PART, 709314158, 0, 92},                  /* P_NAME_SD    37 */
-    {ORDER, 591449447, 0, 1},                  /* O_PRIO_SD    38 */
-    {LINE, 431918286, 0, 1},                   /* HVAR_SD      39 */
-    {ORDER, 851767375, 0, 1},                  /* O_CKEY_SD    40 */
-    {NATION, 606179079, 0, 2},                 /* N_CMNT_SD    41 */
-    {REGION, 1500869201, 0, 2},                /* R_CMNT_SD    42 */
-    {ORDER, 1434868289, 0, 1},                 /* O_LCNT_SD    43 */
-    {SUPP, 263032577, 0, 1},                   /* BBB offset   44 */
-    {SUPP, 753643799, 0, 1},                   /* BBB type     45 */
-    {SUPP, 202794285, 0, 1},                   /* BBB comment  46 */
-    {SUPP, 715851524, 0, 1}                    /* BBB junk     47 */
-};
-double DBGenGlobals::dM = 2147483647.0;
-tdef DBGenGlobals::tdefs[10] = {
-    {"part.tbl", "part table", 200000, NULL, NULL, PSUPP, 0},
-    {"partsupp.tbl", "partsupplier table", 200000, NULL, NULL, NONE, 0},
-    {"supplier.tbl", "suppliers table", 10000, NULL, NULL, NONE, 0},
-    {"customer.tbl", "customers table", 150000, NULL, NULL, NONE, 0},
-    {"orders.tbl", "order table", 150000, NULL, NULL, LINE, 0},
-    {"lineitem.tbl", "lineitem table", 150000, NULL, NULL, NONE, 0},
-    {"orders.tbl", "orders/lineitem tables", 150000, NULL, NULL, LINE, 0},
-    {"part.tbl", "part/partsupplier tables", 200000, NULL, NULL, PSUPP, 0},
-    {"nation.tbl", "nation table", NATIONS_MAX, NULL, NULL, NONE, 0},
-    {"region.tbl", "region table", NATIONS_MAX, NULL, NULL, NONE, 0},
-};
-
-static seed_t *Seed = DBGenGlobals::Seed;
-seed_t seed_backup[MAX_STREAM + 1];
-static bool first_invocation = true;
-std::mutex dbgen_lock;
-
-static tdef *tdefs = DBGenGlobals::tdefs;
-
 namespace tpch {
 
-struct UnsafeAppender {
-	UnsafeAppender(ClientContext &context, TableCatalogEntry *tbl) : context(context), tbl(tbl), col(0) {
-		vector<LogicalType> types;
-		for (idx_t i = 0; i < tbl->columns.size(); i++) {
-			types.push_back(tbl->columns[i].type);
-		}
-		chunk.Initialize(types);
-	}
-
-	void BeginRow() {
-		col = 0;
-	}
-
-	void EndRow() {
-		assert(col == chunk.ColumnCount());
-		chunk.SetCardinality(chunk.size() + 1);
-		if (chunk.size() == STANDARD_VECTOR_SIZE) {
-			Flush();
-		}
-	}
-
-	void Flush() {
-		if (chunk.size() == 0) {
-			return;
-		}
-		tbl->storage->Append(*tbl, context, chunk);
-		chunk.Reset();
-	}
-
-	template <class T>
-	void AppendValue(T value) {
-		assert(col < chunk.ColumnCount());
-		FlatVector::GetData<T>(chunk.data[col])[chunk.size()] = value;
-		col++;
-	}
-
-	void AppendString(const char *value) {
-		AppendValue<string_t>(StringVector::AddString(chunk.data[col], value));
-	}
-
-private:
-	ClientContext &context;
-	TableCatalogEntry *tbl;
-	DataChunk chunk;
-	idx_t col;
-};
-
 struct tpch_append_information {
-	unique_ptr<UnsafeAppender> appender;
+	duckdb::unique_ptr<InternalAppender> appender;
 };
 
 void append_value(tpch_append_information &info, int32_t value) {
-	info.appender->AppendValue<int32_t>(value);
+	info.appender->Append<int32_t>(value);
 }
 
 void append_string(tpch_append_information &info, const char *value) {
-	info.appender->AppendString(value);
+	info.appender->Append<const char *>(value);
 }
 
 void append_decimal(tpch_append_information &info, int64_t value) {
-	info.appender->AppendValue<int64_t>(value);
+	info.appender->Append<int64_t>(value);
 }
 
 void append_date(tpch_append_information &info, string value) {
-	info.appender->AppendValue<date_t>(Date::FromString(value));
+	info.appender->Append<date_t>(Date::FromString(value));
 }
 
 void append_char(tpch_append_information &info, char value) {
@@ -213,7 +94,7 @@ static void append_line(order_t *o, tpch_append_information *info) {
 		// l_linenumber
 		append_value(append_info, o->l[i].lcnt);
 		// l_quantity
-		append_value(append_info, o->l[i].quantity);
+		append_decimal(append_info, o->l[i].quantity);
 		// l_extendedprice
 		append_decimal(append_info, o->l[i].eprice);
 		// l_discount
@@ -365,46 +246,47 @@ static void append_region(code_t *c, tpch_append_information *info) {
 	append_info.appender->EndRow();
 }
 
-static void gen_tbl(int tnum, DSS_HUGE count, tpch_append_information *info) {
+static void gen_tbl(int tnum, DSS_HUGE count, tpch_append_information *info, DBGenContext *dbgen_ctx,
+                    idx_t offset = 0) {
 	order_t o;
 	supplier_t supp;
 	customer_t cust;
 	part_t part;
 	code_t code;
 
-	for (DSS_HUGE i = 1; count; count--, i++) {
-		row_start(tnum);
+	for (DSS_HUGE i = offset + 1; count; count--, i++) {
+		row_start(tnum, dbgen_ctx);
 		switch (tnum) {
 		case LINE:
 		case ORDER:
 		case ORDER_LINE:
-			mk_order(i, &o, 0);
+			mk_order(i, &o, dbgen_ctx, 0);
 			append_order_line(&o, info);
 			break;
 		case SUPP:
-			mk_supp(i, &supp);
+			mk_supp(i, &supp, dbgen_ctx);
 			append_supp(&supp, info);
 			break;
 		case CUST:
-			mk_cust(i, &cust);
+			mk_cust(i, &cust, dbgen_ctx);
 			append_cust(&cust, info);
 			break;
 		case PSUPP:
 		case PART:
 		case PART_PSUPP:
-			mk_part(i, &part);
+			mk_part(i, &part, dbgen_ctx);
 			append_part_psupp(&part, info);
 			break;
 		case NATION:
-			mk_nation(i, &code);
+			mk_nation(i, &code, dbgen_ctx);
 			append_nation(&code, info);
 			break;
 		case REGION:
-			mk_region(i, &code);
+			mk_region(i, &code, dbgen_ctx);
 			append_region(&code, info);
 			break;
 		}
-		row_stop_h(tnum);
+		row_stop_h(tnum, dbgen_ctx);
 	}
 }
 
@@ -459,11 +341,10 @@ struct SupplierInfo {
 };
 const char *SupplierInfo::Columns[] = {"s_suppkey", "s_name",    "s_address", "s_nationkey",
                                        "s_phone",   "s_acctbal", "s_comment"};
-const LogicalType SupplierInfo::Types[] = {
-    LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::VARCHAR),
-    LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::INTEGER),
-    LogicalType(LogicalTypeId::VARCHAR), LogicalType::DECIMAL(15, 2),
-    LogicalType(LogicalTypeId::VARCHAR)};
+const LogicalType SupplierInfo::Types[] = {LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::VARCHAR),
+                                           LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::INTEGER),
+                                           LogicalType(LogicalTypeId::VARCHAR), LogicalType::DECIMAL(15, 2),
+                                           LogicalType(LogicalTypeId::VARCHAR)};
 
 struct CustomerInfo {
 	static constexpr char *Name = "customer";
@@ -473,11 +354,10 @@ struct CustomerInfo {
 };
 const char *CustomerInfo::Columns[] = {"c_custkey", "c_name",    "c_address",    "c_nationkey",
                                        "c_phone",   "c_acctbal", "c_mktsegment", "c_comment"};
-const LogicalType CustomerInfo::Types[] = {
-    LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::VARCHAR),
-    LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::INTEGER),
-    LogicalType(LogicalTypeId::VARCHAR), LogicalType::DECIMAL(15, 2),
-    LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)};
+const LogicalType CustomerInfo::Types[] = {LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::VARCHAR),
+                                           LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::INTEGER),
+                                           LogicalType(LogicalTypeId::VARCHAR), LogicalType::DECIMAL(15, 2),
+                                           LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR)};
 
 struct PartInfo {
 	static constexpr char *Name = "part";
@@ -487,11 +367,10 @@ struct PartInfo {
 };
 const char *PartInfo::Columns[] = {"p_partkey", "p_name",      "p_mfgr",        "p_brand",  "p_type",
                                    "p_size",    "p_container", "p_retailprice", "p_comment"};
-const LogicalType PartInfo::Types[] = {LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::VARCHAR),
-                                       LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
-                                       LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::INTEGER),
-                                       LogicalType(LogicalTypeId::VARCHAR), LogicalType::DECIMAL(15, 2),
-                                       LogicalType(LogicalTypeId::VARCHAR)};
+const LogicalType PartInfo::Types[] = {
+    LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
+    LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::INTEGER),
+    LogicalType(LogicalTypeId::VARCHAR), LogicalType::DECIMAL(15, 2),         LogicalType(LogicalTypeId::VARCHAR)};
 
 struct PartsuppInfo {
 	static constexpr char *Name = "partsupp";
@@ -500,9 +379,9 @@ struct PartsuppInfo {
 	static const LogicalType Types[];
 };
 const char *PartsuppInfo::Columns[] = {"ps_partkey", "ps_suppkey", "ps_availqty", "ps_supplycost", "ps_comment"};
-const LogicalType PartsuppInfo::Types[] = {
-    LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::INTEGER),
-    LogicalType::DECIMAL(15, 2), LogicalType(LogicalTypeId::VARCHAR)};
+const LogicalType PartsuppInfo::Types[] = {LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::INTEGER),
+                                           LogicalType(LogicalTypeId::INTEGER), LogicalType::DECIMAL(15, 2),
+                                           LogicalType(LogicalTypeId::VARCHAR)};
 
 struct OrdersInfo {
 	static constexpr char *Name = "orders";
@@ -513,11 +392,9 @@ struct OrdersInfo {
 const char *OrdersInfo::Columns[] = {"o_orderkey",      "o_custkey", "o_orderstatus",  "o_totalprice", "o_orderdate",
                                      "o_orderpriority", "o_clerk",   "o_shippriority", "o_comment"};
 const LogicalType OrdersInfo::Types[] = {
-    LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::INTEGER),
-    LogicalType(LogicalTypeId::VARCHAR), LogicalType::DECIMAL(15, 2),
-    LogicalType(LogicalTypeId::DATE),    LogicalType(LogicalTypeId::VARCHAR),
-    LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::INTEGER),
-    LogicalType(LogicalTypeId::VARCHAR)};
+    LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::VARCHAR),
+    LogicalType::DECIMAL(15, 2),         LogicalType(LogicalTypeId::DATE),    LogicalType(LogicalTypeId::VARCHAR),
+    LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::VARCHAR)};
 
 struct LineitemInfo {
 	static constexpr char *Name = "lineitem";
@@ -530,51 +407,73 @@ const char *LineitemInfo::Columns[] = {"l_orderkey",    "l_partkey",       "l_su
                                        "l_returnflag",  "l_linestatus",    "l_shipdate", "l_commitdate",
                                        "l_receiptdate", "l_shipinstruct",  "l_shipmode", "l_comment"};
 const LogicalType LineitemInfo::Types[] = {
-    LogicalType(LogicalTypeId::INTEGER),        LogicalType(LogicalTypeId::INTEGER),
-    LogicalType(LogicalTypeId::INTEGER),        LogicalType(LogicalTypeId::INTEGER),
-    LogicalType(LogicalTypeId::INTEGER),        LogicalType::DECIMAL(15, 2),
-    LogicalType::DECIMAL(15, 2), LogicalType::DECIMAL(15, 2),
-    LogicalType(LogicalTypeId::VARCHAR),        LogicalType(LogicalTypeId::VARCHAR),
-    LogicalType(LogicalTypeId::DATE),           LogicalType(LogicalTypeId::DATE),
-    LogicalType(LogicalTypeId::DATE),           LogicalType(LogicalTypeId::VARCHAR),
-    LogicalType(LogicalTypeId::VARCHAR),        LogicalType(LogicalTypeId::VARCHAR)};
+    LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::INTEGER), LogicalType(LogicalTypeId::INTEGER),
+    LogicalType(LogicalTypeId::INTEGER), LogicalType::DECIMAL(15, 2),         LogicalType::DECIMAL(15, 2),
+    LogicalType::DECIMAL(15, 2),         LogicalType::DECIMAL(15, 2),         LogicalType(LogicalTypeId::VARCHAR),
+    LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::DATE),    LogicalType(LogicalTypeId::DATE),
+    LogicalType(LogicalTypeId::DATE),    LogicalType(LogicalTypeId::VARCHAR), LogicalType(LogicalTypeId::VARCHAR),
+    LogicalType(LogicalTypeId::VARCHAR)};
 
 template <class T>
-static void CreateTPCHTable(ClientContext &context, string schema, string suffix) {
-	auto info = make_unique<CreateTableInfo>();
+static void CreateTPCHTable(ClientContext &context, string catalog_name, string schema, string suffix) {
+	auto info = make_uniq<CreateTableInfo>();
 	info->schema = schema;
 	info->table = T::Name + suffix;
-	info->on_conflict = OnCreateConflict::ERROR_ON_CONFLICT;
+	info->on_conflict = OnCreateConflict::IGNORE_ON_CONFLICT;
 	info->temporary = false;
 	for (idx_t i = 0; i < T::ColumnCount; i++) {
-		info->columns.push_back(ColumnDefinition(T::Columns[i], T::Types[i]));
-		info->constraints.push_back(make_unique<NotNullConstraint>(i));
+		info->columns.AddColumn(ColumnDefinition(T::Columns[i], T::Types[i]));
+		info->constraints.push_back(make_uniq<NotNullConstraint>(LogicalIndex(i)));
 	}
-	auto binder = Binder::CreateBinder(context);
-	auto bound_info = binder->BindCreateTableInfo(move(info));
-	auto &catalog = Catalog::GetCatalog(context);
-
-	catalog.CreateTable(context, bound_info.get());
+	auto &catalog = Catalog::GetCatalog(context, catalog_name);
+	catalog.CreateTable(context, std::move(info));
 }
 
-void DBGenWrapper::CreateTPCHSchema(ClientContext &context, string schema, string suffix) {
-	CreateTPCHTable<RegionInfo>(context, schema, suffix);
-	CreateTPCHTable<NationInfo>(context, schema, suffix);
-	CreateTPCHTable<SupplierInfo>(context, schema, suffix);
-	CreateTPCHTable<CustomerInfo>(context, schema, suffix);
-	CreateTPCHTable<PartInfo>(context, schema, suffix);
-	CreateTPCHTable<PartsuppInfo>(context, schema, suffix);
-	CreateTPCHTable<OrdersInfo>(context, schema, suffix);
-	CreateTPCHTable<LineitemInfo>(context, schema, suffix);
+void DBGenWrapper::CreateTPCHSchema(ClientContext &context, string catalog, string schema, string suffix) {
+	CreateTPCHTable<RegionInfo>(context, catalog, schema, suffix);
+	CreateTPCHTable<NationInfo>(context, catalog, schema, suffix);
+	CreateTPCHTable<SupplierInfo>(context, catalog, schema, suffix);
+	CreateTPCHTable<CustomerInfo>(context, catalog, schema, suffix);
+	CreateTPCHTable<PartInfo>(context, catalog, schema, suffix);
+	CreateTPCHTable<PartsuppInfo>(context, catalog, schema, suffix);
+	CreateTPCHTable<OrdersInfo>(context, catalog, schema, suffix);
+	CreateTPCHTable<LineitemInfo>(context, catalog, schema, suffix);
 }
 
-void DBGenWrapper::LoadTPCHData(ClientContext &context, double flt_scale, string schema, string suffix) {
+void skip(int table, int children, DSS_HUGE step, DBGenContext &dbgen_ctx) {
+	switch (table) {
+	case CUST:
+		sd_cust(children, step, &dbgen_ctx);
+		break;
+	case SUPP:
+		sd_supp(children, step, &dbgen_ctx);
+		break;
+	case NATION:
+		sd_nation(children, step, &dbgen_ctx);
+		break;
+	case REGION:
+		sd_region(children, step, &dbgen_ctx);
+		break;
+	case ORDER_LINE:
+		sd_line(children, step, &dbgen_ctx);
+		sd_order(children, step, &dbgen_ctx);
+		break;
+	case PART_PSUPP:
+		sd_part(children, step, &dbgen_ctx);
+		sd_psupp(children, step, &dbgen_ctx);
+		break;
+	}
+}
+
+void DBGenWrapper::LoadTPCHData(ClientContext &context, double flt_scale, string catalog_name, string schema,
+                                string suffix, int children_p, int current_step) {
 	if (flt_scale == 0) {
 		return;
 	}
-	std::lock_guard<std::mutex> l(dbgen_lock);
+
 	// generate the actual data
 	DSS_HUGE rowcnt = 0;
+	DSS_HUGE extra;
 	DSS_HUGE i;
 	// all tables
 	table = (1 << CUST) | (1 << SUPP) | (1 << NATION) | (1 << REGION) | (1 << PART_PSUPP) | (1 << ORDER_LINE);
@@ -586,18 +485,11 @@ void DBGenWrapper::LoadTPCHData(ClientContext &context, double flt_scale, string
 	delete_segment = 0;
 	verbose = 0;
 	set_seeds = 0;
-	scale = 1;
 	updates = 0;
 
-	// check if it is the first invocation
-	if (first_invocation) {
-		// store the initial random seed
-		memcpy(seed_backup, Seed, sizeof(seed_t) * MAX_STREAM + 1);
-		first_invocation = false;
-	} else {
-		// restore random seeds from backup
-		memcpy(Seed, seed_backup, sizeof(seed_t) * MAX_STREAM + 1);
-	}
+	DBGenContext dbgen_ctx;
+
+	tdef *tdefs = dbgen_ctx.tdefs;
 	tdefs[PART].base = 200000;
 	tdefs[PSUPP].base = 200000;
 	tdefs[SUPP].base = 10000;
@@ -609,14 +501,18 @@ void DBGenWrapper::LoadTPCHData(ClientContext &context, double flt_scale, string
 	tdefs[NATION].base = NATIONS_MAX;
 	tdefs[REGION].base = NATIONS_MAX;
 
-	children = 1;
+	children = children_p;
 	d_path = NULL;
+
+	if (current_step >= children) {
+		return;
+	}
 
 	if (flt_scale < MIN_SCALE) {
 		int i;
 		int int_scale;
 
-		scale = 1;
+		dbgen_ctx.scale_factor = 1;
 		int_scale = (int)(1000 * flt_scale);
 		for (i = PART; i < REGION; i++) {
 			tdefs[i].base = (DSS_HUGE)(int_scale * tdefs[i].base) / 1000;
@@ -625,37 +521,48 @@ void DBGenWrapper::LoadTPCHData(ClientContext &context, double flt_scale, string
 			}
 		}
 	} else {
-		scale = (long)flt_scale;
+		dbgen_ctx.scale_factor = (long)flt_scale;
 	}
-
-	load_dists();
+	load_dists(10 * 1024 * 1024, &dbgen_ctx); // 10MiB
 
 	/* have to do this after init */
 	tdefs[NATION].base = nations.count;
 	tdefs[REGION].base = regions.count;
 
-	auto &catalog = Catalog::GetCatalog(context);
+	auto &catalog = Catalog::GetCatalog(context, catalog_name);
 
-	auto append_info = unique_ptr<tpch_append_information[]>(new tpch_append_information[REGION + 1]);
+	auto append_info = duckdb::unique_ptr<tpch_append_information[]>(new tpch_append_information[REGION + 1]);
 	memset(append_info.get(), 0, sizeof(tpch_append_information) * REGION + 1);
 	for (size_t i = PART; i <= REGION; i++) {
 		auto tname = get_table_name(i);
 		if (!tname.empty()) {
 			string full_tname = string(tname) + string(suffix);
-			auto tbl_catalog = catalog.GetEntry<TableCatalogEntry>(context, schema, full_tname);
-			append_info[i].appender = make_unique<UnsafeAppender>(context, tbl_catalog);
+			auto &tbl_catalog = catalog.GetEntry<TableCatalogEntry>(context, schema, full_tname);
+			append_info[i].appender = make_uniq<InternalAppender>(context, tbl_catalog);
 		}
 	}
 
 	for (i = PART; i <= REGION; i++) {
 		if (table & (1 << i)) {
 			if (i < NATION) {
-				rowcnt = tdefs[i].base * scale;
+				rowcnt = tdefs[i].base * dbgen_ctx.scale_factor;
 			} else {
 				rowcnt = tdefs[i].base;
 			}
-			// actually doing something
-			gen_tbl((int)i, rowcnt, append_info.get());
+			if (children > 1 && current_step != -1) {
+				size_t part_size = std::ceil((double)rowcnt / (double)children);
+				auto part_offset = part_size * current_step;
+				auto part_end = part_offset + part_size;
+				rowcnt = part_end > rowcnt ? rowcnt - part_offset : part_size;
+				skip(i, children, part_offset, dbgen_ctx);
+				if (rowcnt > 0) {
+					// generate part of the table
+					gen_tbl((int)i, rowcnt, append_info.get(), &dbgen_ctx, part_offset);
+				}
+			} else {
+				// generate full table
+				gen_tbl((int)i, rowcnt, append_info.get(), &dbgen_ctx);
+			}
 		}
 	}
 	// flush any incomplete chunks

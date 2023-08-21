@@ -173,11 +173,11 @@ statement ok
 INSERT INTO person VALUES ('Diego', 'sad', 'happy','Seat'), ('Tim', 'happy', 'sad','Fiets');
 
 query II
-select count(*), current_mood from person group by current_mood
+select count(*), current_mood from person group by current_mood order by all
 ----
 1	ok
-2	sad
 1	happy
+2	sad
 
 query II
 select name, current_mood from person order by current_mood
@@ -217,8 +217,6 @@ ok
 
 statement error
 SELECT CAST ('bla' as mood)
-----
-ok
 
 query I
 SELECT TRY_CAST ('bla' as mood)
@@ -266,3 +264,25 @@ CREATE TABLE midenum_t2 (
 
 statement ok
 INSERT INTO midenum_t2 VALUES ('0')
+
+
+# Test Large Enums
+statement ok
+CREATE TYPE large_enum AS ENUM ('Floccinaucinihilipilification', 'Antidisestablishmentarianism', 'Honorificabilitudinitatibus');
+
+statement ok
+CREATE TABLE large_enum_tbl (
+    big_word large_enum
+);
+
+statement ok
+INSERT INTO large_enum_tbl values ('Floccinaucinihilipilification'), ('Floccinaucinihilipilification'), ('Honorificabilitudinitatibus'), ('Floccinaucinihilipilification'),  ('Antidisestablishmentarianism')
+
+query I
+select * from large_enum_tbl
+----
+Floccinaucinihilipilification
+Floccinaucinihilipilification
+Honorificabilitudinitatibus
+Floccinaucinihilipilification
+Antidisestablishmentarianism
